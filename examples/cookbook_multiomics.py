@@ -177,6 +177,98 @@ def generate_differential_figure(out_dir: Path) -> None:
     plt.close(fig)
 
 
+def generate_scale_regions_figure(out_dir: Path) -> None:
+    rng = np.random.default_rng(19)
+    n_genes = 600
+    n_up, n_body, n_down = 20, 60, 20  # -1 kb, 60 scaled body bins, +1 kb (bin_size=50)
+    n_bins = n_up + n_body + n_down
+    idx = pd.Index([f"gene_{i:04d}" for i in range(n_genes)])
+
+    n_high, n_low = 320, n_genes - 320
+    # Coordinate grid in visual bin units: [-1000..0] up, [0..3000] body, [3000..4000] down
+    coords = np.linspace(-975, 3975, n_bins)
+
+    # Pol II: sharp promoter-proximal pause peak near TSS (0) + gene-body elongation + small TES dip
+    pol2_profile = (
+        7.5 * np.exp(-0.5 * ((coords - 50) / 140) ** 2)
+        + 2.2 * ((coords >= 0) & (coords <= 3000)).astype(np.float64)
+        + 1.6 * np.exp(-0.5 * ((coords - 3050) / 180) ** 2)
+    )
+    pol2_vals = np.vstack([
+        rng.uniform(0.7, 1.5, (n_high, 1)) * pol2_profile[None, :],
+        rng.uniform(0.05, 0.25, (n_low, 1)) * pol2_profile[None, :],
+    ]) + rng.gamma(1.0, 0.15, (n_genes, n_bins))
+
+    # H3K36me3: enriched across gene body, ramping toward 3' TES
+    body_ramp = np.where(
+        (coords >= 0) & (coords <= 3000),
+        0.5 + 3.8 * (np.maximum(coords, 0.0) / 3000.0) ** 1.3,
+        0.25 * np.exp(-0.5 * ((coords - 3000) / 350) ** 2) * (coords > 3000),
+    )
+    k36_vals = np.vstack([
+        rng.uniform(0.7, 1.4, (n_high, 1)) * body_ramp[None, :],
+        rng.uniform(0.05, 0.25, (n_low, 1)) * body_ramp[None, :],
+    ]) + rng.gamma(1.0, 0.12, (n_genes, n_bins))
+
+    pol2 = eh.NormalizedMatrix(
+        values=pol2_vals.astype(np.float32),
+        region_index=idx,
+        mode="scale_regions",
+        upstream=1000,
+        downstream=1000,
+        bin_size=50,
+        target_bins=n_body,
+        name="Pol II ChIP",
+    )
+    h3k36 = eh.NormalizedMatrix(
+        values=k36_vals.astype(np.float32),
+        region_index=idx,
+        mode="scale_regions",
+        upstream=1000,
+        downstream=1000,
+        bin_size=50,
+        target_bins=n_body,
+        name="H3K36me3",
+    )
+    expr_grp = pd.Series(
+        pd.Categorical(
+            ["Active"] * n_high + ["Inactive"] * n_low,
+            categories=["Active", "Inactive"],
+            ordered=True,
+        ),
+        index=idx,
+    )
+
+    hm = (
+        eh.EnrichedTrack(
+            pol2,
+            cmap="Reds",
+            anchor_labels=("TSS", "TES"),
+            top_profile="mean_ci",
+            colorbar_label="CPM",
+        )
+        + eh.EnrichedTrack(
+            h3k36,
+            cmap="Greens",
+            anchor_labels=("TSS", "TES"),
+            top_profile="mean_ci",
+            colorbar_label="CPM",
+        )
+    )
+    fig = hm.plot(
+        order_by="Pol II ChIP",
+        order_metric="enriched_score",
+        split_by=expr_grp,
+        cluster_palette={"Active": "#c44e52", "Inactive": "#8c8c8c"},
+        figsize=(8.2, 6.0),
+        raster_dpi=300,
+        title="Gene-Body Scale-Regions Profile (TSS to TES)",
+    )
+    fig.savefig(out_dir / "cookbook_scale_regions.png", dpi=180)
+    fig.savefig(out_dir / "cookbook_scale_regions.pdf", dpi=300)
+    plt.close(fig)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run pyenrichedheatmap cookbook examples.")
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/eh_cookbook"))
@@ -185,8 +277,9 @@ def main() -> None:
 
     generate_multiomics_figure(args.out_dir)
     generate_differential_figure(args.out_dir)
+    generate_scale_regions_figure(args.out_dir)
     print(f"Saved cookbook figures to {args.out_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

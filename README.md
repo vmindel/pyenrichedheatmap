@@ -2,6 +2,8 @@
 
 A fast, lightweight, publication-grade Python equivalent of R's `EnrichedHeatmap` + `ComplexHeatmap` horizontal composition for genomics and epigenomics (ChEC-seq, ChIP-seq, ATAC-seq, MNase-seq, RNA-seq).
 
+![Multi-omics chromatin landscape](docs/img/cookbook_multiomics.png)
+
 ## Key Features
 
 - **Zero-desync alignment:** Every track carries a unique pandas `region_index`. Row ordering, filtering, and cluster splitting are guaranteed consistent across all horizontally composed tracks.

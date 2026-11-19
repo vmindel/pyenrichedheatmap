@@ -67,6 +67,8 @@ pol2_body = eh.from_bigwig(
 )
 ```
 
+![Gene-body scale-regions profile (TSS to TES)](../img/cookbook_scale_regions.png)
+
 ## Loading from `pymisha` (`from_pymisha`)
 
 Install the optional extra with `pip install "pyenrichedheatmap[pymisha]"`.
