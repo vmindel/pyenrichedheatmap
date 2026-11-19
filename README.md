@@ -74,6 +74,17 @@ hm = (
 fig = hm.plot(order_by="log2(Mut/WT)", order_metric="center_mean")
 ```
 
-## Examples
+## Documentation & Examples
 
-See [examples/cookbook_multiomics.py](examples/cookbook_multiomics.py) for an end-to-end synthetic multi-omics workflow (ChEC-seq + ATAC-seq + MNase-seq + RNA-seq + peak class + motif score + differential WT vs Mutant + 25k-row large-scale PDF stress test).
+- Full documentation (tutorials + API reference): https://vmindel.github.io/pyenrichedheatmap/
+- Runnable end-to-end cookbook: [examples/cookbook_multiomics.py](examples/cookbook_multiomics.py)
+
+## Claude Code Skill
+
+`pyenrichedheatmap` ships a bundled Agent Skill for Claude Code covering its API contracts, coordinate conventions, shared scales, and large-scale rendering tips:
+
+```bash
+pyenrichedheatmap-install-skills
+```
+
+Pass `--dest .claude/skills/pyenrichedheatmap` to install into a single project instead of `~/.claude/skills/pyenrichedheatmap`.

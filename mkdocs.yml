@@ -1,0 +1,76 @@
+site_name: pyenrichedheatmap
+site_description: Fast, publication-grade Python equivalent of R's EnrichedHeatmap + ComplexHeatmap horizontal composition for genomics
+site_url: https://vmindel.github.io/pyenrichedheatmap/
+repo_url: https://github.com/vmindel/pyenrichedheatmap
+repo_name: vmindel/pyenrichedheatmap
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Tutorials:
+      - Quick start: tutorials/quickstart.md
+      - Genomic loaders: tutorials/loaders.md
+      - Multi-omics composition: tutorials/multiomics.md
+      - Differential & shared scales: tutorials/differential.md
+      - Large-scale rendering & clustering: tutorials/large-scale.md
+      - Coming from R EnrichedHeatmap: tutorials/from-r-enrichedheatmap.md
+  - Claude Code skill: claude-skill.md
+  - API reference:
+      - NormalizedMatrix: api/matrix.md
+      - Loaders: api/loaders.md
+      - Tracks: api/tracks.md
+      - HeatmapList & layout: api/layout.md
+      - Ordering & clustering: api/ordering.md
+      - Profiles & raster: api/profiles-raster.md
+      - Skills installer: api/skills.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_root_heading: true
+            show_source: false
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            merge_init_into_class: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true

@@ -12,3 +12,4 @@ build/
 *.pdf
 *.png
 !docs/**/*.png
+site/
