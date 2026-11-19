@@ -1,59 +1,54 @@
-"""pyenrichedheatmap (enriched_heatmap): Publication-grade Python EnrichedHeatmap + ComplexHeatmap composition."""
+"""Enriched heatmaps from pandas DataFrames, drawn on matplotlib axes.
 
-from enriched_heatmap.layout import HeatmapList
-from enriched_heatmap.loaders import (
-    from_array,
-    from_bigwig,
-    from_dataframe,
-    from_interchange,
-    from_pymisha,
+The data path is plain tables: :func:`bins` makes one row per bin, pymisha's
+``gextract`` (or :func:`read_bigwig`) fills a value per bin, :func:`matrices` pivots
+the result. Drawing functions have the shape ``fn(matrix, ax, rows, **style)``, where
+``rows`` (from :func:`arrange`) is the one object that keeps every panel aligned.
+"""
+
+from enriched_heatmap.bigwig import read_bigwig
+from enriched_heatmap.bins import bins, matrices, matrix
+from enriched_heatmap.datasets import example_genome, example_peaks, example_values
+from enriched_heatmap.draw import (
+    annotation,
+    colorbar,
+    group_labels,
+    heatmap,
+    legend,
+    limits,
+    palette,
+    profile,
 )
+from enriched_heatmap.layout import Grid, figure, plot
 from enriched_heatmap.matrix import NormalizedMatrix
-from enriched_heatmap.ordering import (
-    cluster_hierarchical,
-    cluster_kmeans,
-    compute_order_scores,
-)
-from enriched_heatmap.profiles import ProfileResult, compute_profile
-from enriched_heatmap.raster import (
-    compute_target_raster_rows,
-    downsample_1d_rows,
-    downsample_categorical_rows,
-    downsample_rows,
-)
-from enriched_heatmap.tracks import (
-    BarTrack,
-    BaseTrack,
-    CategoricalTrack,
-    EnrichedTrack,
-    MatrixTrack,
-    PointTrack,
-)
+from enriched_heatmap.ordering import hclust, kmeans, score
+from enriched_heatmap.rows import Rows, arrange
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
-    "__version__",
+    "Grid",
     "NormalizedMatrix",
-    "from_array",
-    "from_dataframe",
-    "from_interchange",
-    "from_bigwig",
-    "from_pymisha",
-    "BaseTrack",
-    "EnrichedTrack",
-    "MatrixTrack",
-    "CategoricalTrack",
-    "BarTrack",
-    "PointTrack",
-    "HeatmapList",
-    "compute_order_scores",
-    "cluster_kmeans",
-    "cluster_hierarchical",
-    "compute_profile",
-    "ProfileResult",
-    "downsample_rows",
-    "downsample_1d_rows",
-    "downsample_categorical_rows",
-    "compute_target_raster_rows",
+    "Rows",
+    "annotation",
+    "arrange",
+    "bins",
+    "colorbar",
+    "example_genome",
+    "example_peaks",
+    "example_values",
+    "figure",
+    "group_labels",
+    "hclust",
+    "heatmap",
+    "kmeans",
+    "legend",
+    "limits",
+    "matrices",
+    "matrix",
+    "palette",
+    "plot",
+    "profile",
+    "read_bigwig",
+    "score",
 ]

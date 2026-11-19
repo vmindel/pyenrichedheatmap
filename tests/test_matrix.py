@@ -118,7 +118,7 @@ def test_signal_transforms_non_destructive():
     np.testing.assert_allclose(z_row.values.std(axis=1), 1.0, atol=1e-5)
 
     # Constant row should z-score safely to 0 without NaNs
-    const_mat = eh.from_array(np.full((2, 10), 5.0))
+    const_mat = eh.NormalizedMatrix(values=np.full((2, 10), 5.0))
     np.testing.assert_allclose(const_mat.zscore(axis=1).values, 0.0)
 
     clipped = mat.clip_quantile(0.1, 0.9)
@@ -162,8 +162,3 @@ def test_interchange_roundtrip():
     assert list(rebuilt.region_index) == list(mat.region_index)
     assert rebuilt.upstream == mat.upstream
     assert rebuilt.name == mat.name
-
-    # Tuple interchange contract (values, metadata)
-    via_tuple = eh.from_interchange((mat.values, {"upstream": 100, "downstream": 100, "bin_size": 10, "name": "FragGeom"}))
-    assert via_tuple.name == "FragGeom"
-    np.testing.assert_allclose(via_tuple.values, mat.values)

@@ -1,5 +1,7 @@
-# HeatmapList & layout
+# Layout
 
-Horizontally composed track list and deterministic nested `GridSpec` renderer.
+::: enriched_heatmap.figure
 
-::: enriched_heatmap.HeatmapList
+::: enriched_heatmap.Grid
+
+::: enriched_heatmap.plot

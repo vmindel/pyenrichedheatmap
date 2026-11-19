@@ -3,8 +3,8 @@
 `pyenrichedheatmap` ships an
 [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) for
 [Claude Code](https://claude.com/claude-code) that teaches the agent how to use
-the library accurately. It covers API contracts, coordinate conventions, shared
-scales, clustering, and large-scale rendering pitfalls.
+the library accurately: the bins -> extraction -> matrices data path, the pymisha
+workflow, row order and splits, and the drawing functions.
 
 ## Install
 
@@ -25,10 +25,9 @@ discovers it automatically in every project from the next session on.
 | `pyenrichedheatmap-install-skills --force` | overwrite an existing copy after upgrading |
 | `pyenrichedheatmap-install-skills --print-path` | print the bundled skill path without copying |
 
-Once installed, ask Claude Code for genomic heatmap tasks in plain language —
-for example: *"load my ATAC and ChEC BigWigs around these TSSs, cluster into 3
-groups, add our RNA-seq log2FC heatmap on the right, and export a 300 dpi
-vector/raster PDF"*.
+Once installed, ask for heatmap tasks in plain language, for example: *"extract
+my ChEC and ATAC tracks from the misha DB around these TSSs, split into 3 k-means
+clusters, add the RNA log2FC as a strip on the right and save a PDF"*.
 
 ## What's inside
 
@@ -37,13 +36,12 @@ reference files under `references/` so it uses minimal context until needed:
 
 | file | covers |
 |---|---|
-| `references/matrix-and-transforms.md` | `NormalizedMatrix`, modes, alignment, non-destructive transforms, interchange contract |
-| `references/loaders-genomics.md` | `from_bigwig`, `from_pymisha`, 0-based `[start, end)` intervals, minus-strand orientation, OOB padding |
-| `references/tracks-and-composition.md` | `EnrichedTrack`, `MatrixTrack`, `CategoricalTrack`, `BarTrack`, `PointTrack`, `scale_group`, differential defaults |
-| `references/ordering-clustering-splits.md` | `order_by`, `enriched_score`, `split_by`, single- and multi-track k-means/hierarchical clustering |
-| `references/rendering-and-large-scale.md` | smart downsampling (`mean`/`q90`/`max`/`absmax`), raster DPI, hybrid PDFs, `return_axes=True` |
-| `references/from-r-enrichedheatmap.md` | translation table from R `EnrichedHeatmap` / `ComplexHeatmap` |
-| `scripts/verify_figure.py` | standalone verification of vertical alignment, rasterization, and compact PDF output |
+| `references/data-path.md` | `eh.bins` anchors, strand, scale-regions, chromosome edges; `eh.matrices`, `eh.read_bigwig`; matrix transforms |
+| `references/pymisha.md` | `gextract` with a bin table, several expressions, virtual tracks, NA fill, why not an integer iterator |
+| `references/ordering.md` | `eh.arrange`, `eh.score`, `eh.kmeans`, `eh.hclust` |
+| `references/figures.md` | `eh.heatmap`, `eh.profile`, `eh.annotation`, `eh.figure`, `eh.plot`, scales, downsampling |
+| `references/from-r.md` | R EnrichedHeatmap / ComplexHeatmap equivalents |
+| `scripts/check_regions.py` | checks a region table: columns, strand, duplicate ids, chromosome names, edge windows |
 
 The test suite (`tests/test_skills.py`) checks the skill on every commit:
 
@@ -51,4 +49,4 @@ The test suite (`tests/test_skills.py`) checks the skill on every commit:
 - every file in `references/` is routed from `SKILL.md`;
 - every `eh.<name>` referenced in the skill is a real export on `enriched_heatmap`;
 - the `pyenrichedheatmap-install-skills` CLI works;
-- `scripts/verify_figure.py` passes cleanly.
+- `scripts/check_regions.py` flags a bad table and passes a good one.
