@@ -45,8 +45,8 @@ def test_references_only_mention_real_api():
 def test_install_cli(tmp_path, capsys):
     dest = install_skill(tmp_path / "skills" / "pyenrichedheatmap")
     assert (dest / "SKILL.md").read_text() == (SKILL / "SKILL.md").read_text()
-    assert (dest / "references" / "tracks-and-composition.md").is_file()
-    assert (dest / "scripts" / "verify_figure.py").is_file()
+    assert (dest / "references" / "data-path.md").is_file()
+    assert (dest / "scripts" / "check_regions.py").is_file()
 
     with pytest.raises(FileExistsError):
         install_skill(dest)
@@ -58,12 +58,18 @@ def test_install_cli(tmp_path, capsys):
     assert capsys.readouterr().out.strip().endswith(str(SKILL))
 
 
-def test_verify_figure_script_passes():
-    script = SKILL / "scripts" / "verify_figure.py"
-    out = subprocess.run(
-        [sys.executable, str(script), "--n-regions", "600", "--n-bins", "50"],
-        capture_output=True,
-        text=True,
-    )
-    assert out.returncode == 0, out.stdout + out.stderr
-    assert out.stdout.startswith("OK:")
+def test_check_regions_script(tmp_path):
+    script = SKILL / "scripts" / "check_regions.py"
+    bed = tmp_path / "peaks.bed"
+    bed.write_text("chr1\t100\t300\tp1\t0\t+\nchr9\t500\t700\tp2\t0\t-\n")
+    sizes = tmp_path / "chrom.sizes"
+    sizes.write_text("chr1\t10000\n")
+    out = subprocess.run([sys.executable, str(script), str(bed), "--genome", str(sizes)],
+                         capture_output=True, text=True)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "chromosomes not in genome" in out.stdout and "chr9" in out.stdout
+    assert "touch a chromosome edge" in out.stdout
+    sizes.write_text("chr1\t10000\nchr9\t10000\n")
+    ok = subprocess.run([sys.executable, str(script), str(bed), "--genome", str(sizes)],
+                        capture_output=True, text=True)
+    assert ok.returncode == 0, ok.stdout + ok.stderr

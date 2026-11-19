@@ -1,65 +1,43 @@
 # Installation
 
-`pyenrichedheatmap` requires **Python 3.10+** and keeps its core footprint light
-(`numpy`, `pandas`, `matplotlib`).
-
-## Basic install
+Python 3.10 or later. Core dependencies: numpy, pandas, matplotlib.
 
 ```bash
-pip install pyenrichedheatmap
+pip install "git+https://github.com/vmindel/pyenrichedheatmap"
 ```
 
-Or directly from GitHub:
+Optional extras:
 
 ```bash
-pip install "git+https://github.com/vmindel/pyenrichedheatmap.git"
+pip install "pyenrichedheatmap[stats] @ git+https://github.com/vmindel/pyenrichedheatmap"    # scipy, scikit-learn
+pip install "pyenrichedheatmap[bigwig] @ git+https://github.com/vmindel/pyenrichedheatmap"   # pyBigWig
+pip install "pyenrichedheatmap[pymisha] @ git+https://github.com/vmindel/pyenrichedheatmap"  # pymisha
 ```
 
-## Optional extras
+- `stats`: `eh.hclust` needs scipy. `eh.kmeans` uses scikit-learn when installed and a
+  NumPy implementation otherwise; `mat.smooth` likewise falls back to NumPy.
+- `bigwig`: needed only for `eh.read_bigwig`.
+- `pymisha`: the package never imports pymisha itself; you call `gextract`. The extra
+  is a convenience for installing both.
 
-Install only the optional integrations you need:
-
-```bash
-# Clustering (k-means, hierarchical) and SciPy Gaussian smoothing
-pip install "pyenrichedheatmap[stats]"
-
-# BigWig loading via pyBigWig
-pip install "pyenrichedheatmap[bigwig]"
-
-# pymisha database and virtual track loading
-pip install "pyenrichedheatmap[pymisha]"
-```
-
-Combine extras as needed:
+## Development
 
 ```bash
-pip install "pyenrichedheatmap[stats,bigwig]"
-```
-
-## Development & documentation
-
-```bash
-git clone https://github.com/vmindel/pyenrichedheatmap.git
+git clone https://github.com/vmindel/pyenrichedheatmap
 cd pyenrichedheatmap
 pip install -e ".[dev]"
-pytest
+pytest                              # includes running every tutorial
+python docs/run_docs.py --update    # refresh tutorial output and figures
 mkdocs serve
 ```
 
-## Verify your install
+The pymisha tutorial runs against pymisha's bundled example database and is skipped
+when pymisha is not installed.
 
-```python
-import enriched_heatmap as eh
-
-print(eh.__version__)
-```
-
-## Installing the Claude Code skill
-
-If you use Claude Code, install the bundled Agent Skill once after installing the package:
+## Claude Code skill
 
 ```bash
 pyenrichedheatmap-install-skills
 ```
 
-See [Claude Code skill](claude-skill.md) for all installer options.
+See [Claude Code skill](claude-skill.md).

@@ -1,4 +1,4 @@
-"""Row ordering, k-means, hierarchical clustering, and cluster splitting utilities."""
+"""Per-region scores and clusterings. Every function returns a pandas object indexed by region."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _enriched_score(matrix: NormalizedMatrix) -> np.ndarray:
         return np.where(den > 0, num / den, np.nan)
 
 
-def compute_order_scores(
+def _scores(
     matrix: NormalizedMatrix,
     metric: OrderMetric = "center_mean",
     center_window: float | None = None,
@@ -199,6 +199,8 @@ def _build_joint_features(
     """Stack one or more matrices horizontally into a joint clustering feature matrix."""
     if isinstance(matrices, (NormalizedMatrix, pd.DataFrame, np.ndarray)):
         items = [matrices]
+    elif isinstance(matrices, dict):
+        items = list(matrices.values())
     else:
         items = list(matrices)
     if not items:
@@ -275,7 +277,7 @@ def _numpy_kmeans(
     return best_labels
 
 
-def cluster_kmeans(
+def kmeans(
     matrices: NormalizedMatrix | pd.DataFrame | np.ndarray | Sequence[Any],
     k: int,
     random_state: int = 42,
@@ -284,10 +286,27 @@ def cluster_kmeans(
     order_clusters: Literal["descending", "ascending", "none"] = "descending",
     label_prefix: str = "C",
 ) -> pd.Series:
-    """Cluster regions with k-means across one or multiple aligned tracks.
+    """k-means on one or several matrices, joined on region.
 
-    Returns an ordered Categorical :class:`pandas.Series` indexed by ``region_index``
-    with labels ``f"{label_prefix}1"`` .. ``f"{label_prefix}{k}"``.
+    Parameters
+    ----------
+    matrices : NormalizedMatrix, DataFrame, array, or a list/dict of them
+        Features are the bins of each matrix side by side. Later matrices are aligned to
+        the regions of the first; NaNs are imputed with the bin median.
+    k : int
+        Number of clusters.
+    scale : {"zscore", "row_zscore", "none"}
+        ``"zscore"`` standardises each matrix as a whole, so tracks with different
+        units weigh equally. ``"row_zscore"`` clusters on profile shape only.
+    order_clusters : {"descending", "ascending", "none"}
+        Number clusters by the mean of the first matrix, strongest first by default.
+    label_prefix : str
+        Labels are ``C1``, ``C2``, ... by default.
+
+    Returns
+    -------
+    pandas.Series
+        Ordered categorical, indexed by region. Pass it as ``groups=`` to :func:`arrange`.
     """
     if k < 1:
         raise ValueError("`k` must be >= 1.")
@@ -328,7 +347,7 @@ def cluster_kmeans(
     return pd.Series(cat, index=region_index, name="cluster")
 
 
-def cluster_hierarchical(
+def hclust(
     matrices: NormalizedMatrix | pd.DataFrame | np.ndarray | Sequence[Any],
     k: int | None = None,
     method: str = "ward",
@@ -350,7 +369,7 @@ def cluster_hierarchical(
         from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
     except ImportError as exc:
         raise ImportError(
-            "scipy is required for `cluster_hierarchical`. "
+            "scipy is required for `hclust`. "
             "Install it with: pip install 'pyenrichedheatmap[stats]'"
         ) from exc
 
@@ -393,216 +412,30 @@ def cluster_hierarchical(
     return ordered_index, cluster_series
 
 
-def _sort_positions_by_scores(
-    scores: np.ndarray, ascending: bool = False
-) -> np.ndarray:
-    """Stable sort pushing NaNs to the bottom regardless of sort direction."""
-    vals = np.asarray(scores, dtype=np.float64)
-    if ascending:
-        # NaNs sort last by default with np.argsort
-        return np.argsort(vals, kind="mergesort")
-    # For descending, negate finite values and place NaNs at +inf (bottom)
-    key = np.where(np.isfinite(vals), -vals, np.inf)
-    return np.argsort(key, kind="mergesort")
+def score(
+    matrix: NormalizedMatrix,
+    metric: OrderMetric = "center_mean",
+    center_window: float | None = None,
+) -> pd.Series:
+    """One number per region, for sorting rows.
 
-
-def resolve_ordering_and_splits(
-    tracks: list[Any],
-    region_index: pd.Index,
-    order_by: str | Callable | pd.Series | pd.Index | np.ndarray | None = None,
-    order_metric: OrderMetric = "center_mean",
-    ascending: bool = False,
-    split_by: pd.Series | pd.Categorical | Sequence[Any] | int | None = None,
-    cluster_tracks: list[str] | None = None,
-    random_state: int = 42,
-) -> tuple[pd.Index, pd.Series | None, list[tuple[str, slice]]]:
-    """Resolve global row order and cluster splits across a track list.
+    Parameters
+    ----------
+    matrix : NormalizedMatrix
+    metric : str or callable
+        ``"center_mean"`` and ``"center_max"`` use bins within ``center_window`` bp of
+        the anchor (reference-point) or the body bins (scale-regions). ``"mean"``,
+        ``"median"``, ``"max"`` and ``"sum"`` use every bin. ``"enriched_score"`` is
+        R EnrichedHeatmap's weighting: flank bins count less the further they are from
+        the anchor. A callable gets the matrix and returns one value per region.
+    center_window : float, optional
+        Half-width in bp for the ``center_*`` metrics. Default: ``min(150, 15%`` of the
+        window``)``.
 
     Returns
     -------
-    ordered_index : pd.Index
-        Final ordered region index applied uniformly to every track.
-    split_series : pd.Series | None
-        Cluster membership aligned to ``ordered_index`` (``None`` when unsplit).
-    split_slices : list[tuple[str, slice]]
-        Contiguous ``(group_label, slice)`` partitions of ``ordered_index``.
+    pandas.Series
+        Indexed by region, named after the matrix. NaN where a region has no data.
     """
-    n_regions = len(region_index)
-    if n_regions == 0:
-        return region_index.copy(), None, []
-
-    track_map = {t.name: t for t in tracks if t.name}
-
-    def _pick_cluster_matrices() -> list[Any]:
-        if cluster_tracks is not None:
-            chosen = []
-            for name in cluster_tracks:
-                if name not in track_map:
-                    raise KeyError(
-                        f"Track {name!r} in `cluster_tracks` not found. "
-                        f"Available tracks: {list(track_map.keys())}"
-                    )
-                chosen.append(track_map[name]._clustering_data(region_index))
-            return chosen
-        if isinstance(order_by, str) and order_by in track_map:
-            return [track_map[order_by]._clustering_data(region_index)]
-        for t in tracks:
-            data = t._clustering_data(region_index)
-            if data is not None:
-                return [data]
-        raise ValueError("No numeric tracks available for clustering.")
-
-    # 1. Resolve split_by -> Series aligned to region_index
-    split_series_raw: pd.Series | None = None
-    group_order: list[Any] = []
-
-    if split_by is not None:
-        if isinstance(split_by, (int, np.integer)):
-            split_series_raw = cluster_kmeans(
-                _pick_cluster_matrices(), k=int(split_by), random_state=random_state
-            )
-            group_order = list(split_series_raw.cat.categories)
-        elif isinstance(split_by, pd.Series):
-            aligned = split_by.reindex(region_index)
-            if isinstance(aligned.dtype, pd.CategoricalDtype):
-                present = set(aligned.dropna().unique())
-                group_order = [c for c in aligned.cat.categories if c in present]
-            else:
-                group_order = list(pd.unique(aligned.dropna()))
-            split_series_raw = aligned
-        elif isinstance(split_by, pd.Categorical):
-            if len(split_by) != n_regions:
-                raise ValueError(
-                    f"`split_by` length ({len(split_by)}) does not match n_regions ({n_regions})."
-                )
-            s = pd.Series(split_by, index=region_index)
-            present = set(s.dropna().unique())
-            group_order = [c for c in split_by.categories if c in present]
-            split_series_raw = s
-        else:
-            arr = list(split_by)
-            if len(arr) != n_regions:
-                raise ValueError(
-                    f"`split_by` length ({len(arr)}) does not match n_regions ({n_regions})."
-                )
-            s = pd.Series(arr, index=region_index)
-            group_order = list(pd.unique(s.dropna()))
-            split_series_raw = s
-
-    # 2. Compute ordering scores OR explicit order
-    explicit_order_index: pd.Index | None = None
-    global_scores: np.ndarray | None = None
-    use_hierarchical_within_split = False
-
-    if order_by is None:
-        pass
-    elif isinstance(order_by, str):
-        if order_by in track_map:
-            global_scores = track_map[order_by]._order_scores(region_index, metric=order_metric)
-        elif order_by == "kmeans":
-            if split_series_raw is None:
-                split_series_raw = cluster_kmeans(
-                    _pick_cluster_matrices(), k=3, random_state=random_state
-                )
-                group_order = list(split_series_raw.cat.categories)
-            # Also order within each cluster by the primary numeric track
-            for t in tracks:
-                sc = t._order_scores(region_index, metric=order_metric)
-                if sc is not None:
-                    global_scores = sc
-                    break
-        elif order_by in ("hierarchical", "hclust"):
-            use_hierarchical_within_split = True
-        else:
-            raise KeyError(
-                f"`order_by` {order_by!r} does not match any track name "
-                f"({list(track_map.keys())}) or built-in method ('kmeans', 'hierarchical')."
-            )
-    elif callable(order_by):
-        res = order_by(track_map) if len(track_map) > 0 else order_by(region_index)
-        if isinstance(res, pd.Index):
-            explicit_order_index = res
-        elif isinstance(res, pd.Series):
-            global_scores = res.reindex(region_index).to_numpy(dtype=np.float64)
-        else:
-            arr = np.asarray(res)
-            if arr.shape != (n_regions,):
-                raise ValueError(
-                    f"Callable `order_by` returned shape {arr.shape}, expected ({n_regions},)."
-                )
-            global_scores = arr.astype(np.float64)
-    elif isinstance(order_by, pd.Index):
-        explicit_order_index = order_by
-    elif isinstance(order_by, pd.Series):
-        global_scores = order_by.reindex(region_index).to_numpy(dtype=np.float64)
-    else:
-        arr = np.asarray(order_by)
-        if arr.ndim != 1 or len(arr) != n_regions:
-            raise ValueError(
-                f"`order_by` must be 1D of length {n_regions}, got shape {arr.shape}."
-            )
-        if np.issubdtype(arr.dtype, np.number):
-            # Distinguish explicit integer region_index IDs vs numeric scores:
-            # treat numeric array as ordering scores unless it's explicitly pd.Index
-            global_scores = arr.astype(np.float64)
-        else:
-            explicit_order_index = pd.Index(arr)
-
-    # 3. Apply ordering within each split group (or globally if unsplit)
-    def _order_subset(sub_pos: np.ndarray) -> np.ndarray:
-        if len(sub_pos) <= 1:
-            return sub_pos
-        if explicit_order_index is not None:
-            sub_ids = region_index[sub_pos]
-            rank_map = {rid: i for i, rid in enumerate(explicit_order_index)}
-            sub_ranks = np.array([rank_map.get(rid, len(rank_map)) for rid in sub_ids])
-            return sub_pos[np.argsort(sub_ranks, kind="mergesort")]
-        if use_hierarchical_within_split:
-            sub_idx = region_index[sub_pos]
-            mats = []
-            for m in _pick_cluster_matrices():
-                if isinstance(m, (NormalizedMatrix, pd.DataFrame)):
-                    mats.append(m.reindex(sub_idx))
-                else:
-                    mats.append(np.asarray(m)[sub_pos])
-            h_idx, _ = cluster_hierarchical(mats, k=None)
-            pos_lookup = region_index.get_indexer(h_idx)
-            return pos_lookup
-        if global_scores is not None:
-            sub_scores = global_scores[sub_pos]
-            local_order = _sort_positions_by_scores(sub_scores, ascending=ascending)
-            return sub_pos[local_order]
-        return sub_pos
-
-    if split_series_raw is None:
-        ordered_pos = _order_subset(np.arange(n_regions, dtype=int))
-        ordered_index = region_index[ordered_pos]
-        return ordered_index, None, [("", slice(0, n_regions))]
-
-    ordered_pos_parts: list[np.ndarray] = []
-    split_slices: list[tuple[str, slice]] = []
-    cursor = 0
-
-    for grp in group_order:
-        mask = (split_series_raw == grp).to_numpy(dtype=bool, na_value=False)
-        sub_pos = np.flatnonzero(mask)
-        if sub_pos.size == 0:
-            continue
-        sorted_sub = _order_subset(sub_pos)
-        ordered_pos_parts.append(sorted_sub)
-        split_slices.append((str(grp), slice(cursor, cursor + len(sorted_sub))))
-        cursor += len(sorted_sub)
-
-    # Append any NaN split rows at the bottom under "NA" if present
-    na_mask = split_series_raw.isna().to_numpy(dtype=bool)
-    if np.any(na_mask):
-        sub_pos = np.flatnonzero(na_mask)
-        sorted_sub = _order_subset(sub_pos)
-        ordered_pos_parts.append(sorted_sub)
-        split_slices.append(("NA", slice(cursor, cursor + len(sorted_sub))))
-        cursor += len(sorted_sub)
-
-    ordered_pos = np.concatenate(ordered_pos_parts) if ordered_pos_parts else np.array([], dtype=int)
-    ordered_index = region_index[ordered_pos]
-    aligned_splits = split_series_raw.reindex(ordered_index)
-    return ordered_index, aligned_splits, split_slices
+    vals = _scores(matrix, metric=metric, center_window=center_window)
+    return pd.Series(vals, index=matrix.region_index, name=matrix.name or "score")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import enriched_heatmap as eh
+import enriched_heatmap.raster as eh
 
 
 def test_downsample_passthrough_when_small():

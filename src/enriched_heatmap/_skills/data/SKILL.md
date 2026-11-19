@@ -1,45 +1,45 @@
 ---
 name: pyenrichedheatmap
-description: Use for any task involving pyenrichedheatmap (imported as enriched_heatmap) — publication-grade Python genomic heatmaps and horizontal multi-omics track composition inspired by R's EnrichedHeatmap and ComplexHeatmap. Triggers on plotting ChEC-seq, ChIP-seq, ATAC-seq, MNase-seq, or RNA-seq signal heatmaps with top metaplots; loading signal matrices from BigWig (pyBigWig), pymisha databases/virtual tracks, NumPy arrays, or pandas DataFrames; reference-point (TSS/center) or scale-regions (gene body) normalization; strand-aware bin orientation; horizontal `+` composition of EnrichedTrack, MatrixTrack, CategoricalTrack, BarTrack, and PointTrack; differential log2FC heatmaps and shared-scale colorbars; k-means or hierarchical clustering splits; smart row downsampling for 10k-100k regions into compact hybrid vector/raster PDFs; or porting R EnrichedHeatmap/ComplexHeatmap figures to Python. This is a router skill — read the relevant file under references/ before writing enriched_heatmap code.
+description: Use for any task involving the pyenrichedheatmap library (import enriched_heatmap as eh) - enriched heatmaps / metaplots / tornado plots in Python, signal around a set of regions with one row per region. Triggers on heatmaps of ChEC-seq, ChIP-seq, ATAC, MNase or CUT&RUN signal around peaks, TSSs, motifs or gene bodies; pymisha gextract into region x bin matrices; bigWig to matrix; k-means or hierarchical row splits; average profiles above heatmaps; R EnrichedHeatmap / ComplexHeatmap or deepTools plotHeatmap equivalents in Python. This is a router skill - read the relevant file under references/ before writing eh code.
 ---
 
-# pyenrichedheatmap (`enriched_heatmap`)
+# pyenrichedheatmap
 
-Builds aligned, publication-grade genomic heatmaps with top aggregate metaplots
-and horizontally composed annotation tracks using matplotlib `GridSpec`. This
-file only routes: the reference files hold exact signatures, coordinate rules,
-and silent pitfalls. Read the relevant reference file before writing code.
+Builds region x bin matrices from plain tables and draws them on matplotlib
+axes. The data path is `eh.bins` (one row per bin) -> any extraction that
+returns one value per bin (`pymisha.gextract(..., intervals=b, iterator=b)`,
+`eh.read_bigwig`) -> `eh.matrices`. Drawing functions have the shape
+`fn(data, ax, rows, **style)`; `rows` from `eh.arrange` is the one object that
+aligns every panel. This file only routes; read the file for the task first.
 
 ## Task to reference file
 
 | task | read |
 |---|---|
-| **`NormalizedMatrix` & transforms**: `reference_point` vs `scale_regions`, `.reindex()`, `.loc`, `.log1p()`, `.zscore()`, `.smooth()`, `.log2_ratio()`, `.subtract()`, interchange payloads | `references/matrix-and-transforms.md` |
-| **loading genomic data**: `from_bigwig`, `from_pymisha`, `from_array`, `from_dataframe`, `from_interchange`, 0-based `[start, end)` intervals, minus-strand flipping, OOB padding, `chr` prefixes | `references/loaders-genomics.md` |
-| **tracks & `+` composition**: `EnrichedTrack`, `MatrixTrack`, `CategoricalTrack`, `BarTrack`, `PointTrack`, `HeatmapList`, shared `scale_group` colorbars & synchronized metaplots, differential auto-defaults | `references/tracks-and-composition.md` |
-| **ordering, clustering & splits**: `order_by`, `order_metric` (`center_mean`, `enriched_score`), `split_by`, `cluster_kmeans`, `cluster_hierarchical`, joint multi-track clustering, `region_index` zero-desync | `references/ordering-clustering-splits.md` |
-| **large-scale rendering & PDF quality**: `downsample_agg` (`mean`, `q90`, `max`, `absmax`), `raster_dpi`, `max_raster_rows`, vector chrome vs raster body, `join` modes, `return_axes=True` | `references/rendering-and-large-scale.md` |
-| **porting R `EnrichedHeatmap` / `ComplexHeatmap`** figures to Python | `references/from-r-enrichedheatmap.md` |
-| **"verify alignment & compact PDF output"**: independent check script for pixel alignment, rasterization, and PDF size | `scripts/verify_figure.py` |
+| **regions to matrices**: `eh.bins` anchors, strand, scale-regions, chromosome edges, `eh.matrices`, `eh.read_bigwig`, matrix transforms | `references/data-path.md` |
+| **pymisha**: gextract with a bin table, several expressions, virtual tracks for sum/max, NA fill, why not `iterator=<int>` | `references/pymisha.md` |
+| **row order and splits**: `eh.arrange`, `eh.score`, `eh.kmeans`, `eh.hclust`, groups from a table column | `references/ordering.md` |
+| **drawing and layout**: `eh.heatmap`, `eh.profile`, `eh.annotation`, `eh.figure`, `eh.plot`, shared and diverging scales, downsampling, saving | `references/figures.md` |
+| **coming from R** EnrichedHeatmap / ComplexHeatmap | `references/from-r.md` |
+| "**why are my rows empty / NaN / misaligned?**": check a regions table | `scripts/check_regions.py` |
 
-`scripts/verify_figure.py` (path relative to this skill's root) renders a
-multi-omics test figure and verifies exact vertical cluster alignment,
-rasterized heatmap bodies vs vector metaplots, and compact PDF size. Run
-`python scripts/verify_figure.py --help`.
+`scripts/check_regions.py` (path relative to this skill's root) reads a
+BED/TSV/CSV/parquet region table and reports missing columns, strand
+encoding, duplicate identifiers, chromosome names absent from a genome
+table, windows that run off a chromosome, and the size of the bin table.
+Run `python scripts/check_regions.py --help`.
 
 ## Conventions
 
-- Package install name is `pyenrichedheatmap`; import name is
-  `import enriched_heatmap as eh`.
-- Every track carries a unique `pd.Index` (`region_index`). `eh.HeatmapList.plot()`
-  aligns all tracks by `region_index` (default `join="inner"`) before ordering
-  or splitting — never manually sort NumPy arrays outside the tracks.
-- Genomic intervals are **0-based, half-open `[start, end)`** everywhere.
-  When a `strand` column is present and `strand_oriented=True` (default),
-  minus-strand rows are automatically reversed 5' -> 3' (including asymmetric
-  `upstream != downstream` flanks and `tss` anchoring at `end`).
-- All transforms on `eh.NormalizedMatrix` are **non-destructive** and return a
-  new copy.
-- Save figures with `fig.savefig("out.pdf", dpi=300)` — only heatmap bodies are
-  rasterized (`rasterized=True`); metaplots, ticks, borders, labels, legends,
-  and colorbars remain 100% vector.
+- `import enriched_heatmap as eh`. Coordinates are 0-based, half-open
+  (BED, misha). Never add or subtract 1 between pymisha and eh.
+- Region identifiers are the DataFrame index (or `eh.bins(..., id="col")`)
+  and must be unique. Matrices, annotation Series and `rows` are matched by
+  identifier, never by position.
+- Strand: `"+"`/`"-"` and `1`/`-1` both work. Matrices come out 5' -> 3';
+  never flip them afterwards.
+- Pass the `eh.bins` table unchanged (or boolean-filtered) to the extraction
+  and to `eh.matrices`; its layout lives in `DataFrame.attrs`, which
+  `merge`/`concat` drop.
+- Every drawing function takes the same `rows`; build it once with
+  `eh.arrange(by, groups=...)`.

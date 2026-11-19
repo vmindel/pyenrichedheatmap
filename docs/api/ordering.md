@@ -1,9 +1,11 @@
-# Ordering & clustering
+# Order and groups
 
-Per-region ordering metrics and single- or multi-track clustering utilities.
+::: enriched_heatmap.arrange
 
-::: enriched_heatmap.compute_order_scores
+::: enriched_heatmap.Rows
 
-::: enriched_heatmap.cluster_kmeans
+::: enriched_heatmap.score
 
-::: enriched_heatmap.cluster_hierarchical
+::: enriched_heatmap.kmeans
+
+::: enriched_heatmap.hclust
