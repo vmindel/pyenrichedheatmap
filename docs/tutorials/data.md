@@ -78,8 +78,10 @@ Bodies shorter than `body_bins` bp are sampled at 1 bp positions.
 
 Anything that returns one value per bin row works. The contract `eh.matrices` relies on
 is the one pymisha's `gextract` already follows: an `intervalID` column giving the
-1-based row of `bins` each value belongs to. Without `intervalID`, rows must line up
-with `bins` one to one.
+1-based row of `bins` each value belongs to. `region` and `bin` columns work too (that
+is what `gextract(..., intervals_join="intervals")` returns). A table with neither is
+accepted only if its `start`/`end` match `bins` row for row; otherwise `eh.matrices`
+raises rather than guess an order.
 
 | source | call |
 |---|---|

@@ -90,8 +90,23 @@ def test_matrices_by_interval_id_in_any_row_order():
                                   mats["x"].values)
     with pytest.raises(ValueError):
         eh.matrix(vals.iloc[:-1].drop(columns="intervalID"), b, "x")
+    # Same length, wrong order, no ids: must refuse rather than scramble.
+    with pytest.raises(ValueError, match="row for row"):
+        eh.matrix(shuffled.drop(columns="intervalID"), b, "x")
+    # region/bin columns place rows in any order.
+    by_label = shuffled.drop(columns="intervalID").assign(
+        region=b["region"].to_numpy()[shuffled["intervalID"] - 1],
+        bin=b["bin"].to_numpy()[shuffled["intervalID"] - 1])
+    np.testing.assert_array_equal(eh.matrix(by_label, b, "x").values, mats["x"].values)
     with pytest.raises(ValueError):
         eh.matrix(vals, b)  # two value columns, none named
+
+
+def test_snap_rounds_anchors_down():
+    b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50, anchor="start", snap=50)
+    assert (b.start % 50 == 0).all()
+    a = b[b.region == "a"]
+    assert a.start.min() == 1000 - 100
 
 
 def test_bins_validation():
@@ -160,3 +175,16 @@ def test_pymisha_roundtrip_with_unaligned_overlapping_windows(misha_db):
     one = pd.DataFrame({"chrom": [row.chrom], "start": [row.start], "end": [row.end]})
     direct = pm.gextract("dense_track", intervals=one, iterator=one)["dense_track"].iloc[0]
     assert mats["d"].values[1, 3] == pytest.approx(direct, rel=1e-5)
+
+
+def test_pymisha_intervals_join_matches_default(misha_db):
+    pm = misha_db
+    regions = pd.DataFrame({"chrom": ["2", "1"], "start": [5000, 1037], "end": [5000, 1037]},
+                           index=["p", "q"])
+    b = eh.bins(regions, upstream=100, downstream=100, bin_size=50, genome=pm.gintervals_all())
+    default = eh.matrix(pm.gextract("dense_track", intervals=b, iterator=b), b)
+    joined = eh.matrix(pm.gextract("dense_track", intervals=b, iterator=b,
+                                   intervals_join="intervals"), b, "dense_track")
+    np.testing.assert_array_equal(joined.values, default.values)
+    with pytest.raises(ValueError, match="row for row"):
+        eh.matrix(pm.gextract("dense_track", intervals=b, iterator=b, intervals_join="none"), b)

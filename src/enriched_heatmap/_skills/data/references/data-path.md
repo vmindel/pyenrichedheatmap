@@ -5,7 +5,7 @@
 ```python
 b = eh.bins(regions, upstream=1000, downstream=1000, bin_size=20,
             anchor="center", body_bins=None, genome=None, id=None,
-            cols=("chrom", "start", "end"), strand="strand")
+            cols=("chrom", "start", "end"), strand="strand", snap=None)
 # -> DataFrame chrom, start, end, region, bin (one row per bin)
 ```
 
@@ -24,11 +24,14 @@ b = eh.bins(regions, upstream=1000, downstream=1000, bin_size=20,
   first. Without `genome` only bins before 0 are dropped, and pymisha will
   error on bins past a chromosome end.
 - Duplicate region identifiers raise ValueError; `reset_index()` or `id=`.
+- `snap=n` rounds anchors down to a multiple of `n` (reference-point only), to
+  line bins up with a fixed-bin track's stored grid (see `references/pymisha.md`).
 
 ## Filling values
 
-Any DataFrame with one row per bin works if it has `intervalID` (1-based row
-of `b`) or exactly `len(b)` rows in `b`'s order.
+Any DataFrame with one row per bin works if it has `region` + `bin` columns,
+or `intervalID` (1-based row of `b`), or `start`/`end` identical to `b` row
+for row. Anything else raises instead of guessing.
 
 ```python
 vals = pm.gextract(exprs, intervals=b, iterator=b, colnames=names)  # misha

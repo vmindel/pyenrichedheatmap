@@ -14,16 +14,24 @@ mats = eh.matrices(vals, b)
 
 - `intervals=b, iterator=b` returns one row per bin with `intervalID`
   (1-based row of `b`). Overlapping windows are fine. Row order does not
-  matter; `eh.matrices` places rows by `intervalID`.
+  matter; `eh.matrices` places rows by `intervalID`, or by `region`/`bin`
+  with `intervals_join="intervals"`. `intervals_join="none"` drops both and
+  `eh.matrices` refuses it (rows come back genomically sorted).
 - **Never** `iterator=<int>` with window intervals: misha tiles from the
   chromosome start, so bins misalign between regions and edge bins are
   partial.
 - One `gextract` with all expressions (one genome pass), `colnames=` for
   names. Do not loop gextract per track.
-- Per-bin aggregation is chosen by the extraction. A bare dense track gives
-  the coverage-weighted mean under each bin. For counts use a virtual track:
-  `pm.gvtrack_create("chec_sum", "chec.msn2", func="sum")`; also `max`,
-  `min`, `avg`, `pwm`, `distance`, with `sshift=`/`eshift=` in bp.
+- Per-bin aggregation is chosen by the extraction. A bare track name gives
+  the plain mean of the stored bins each heatmap bin touches. For counts use
+  a virtual track: `pm.gvtrack_create("chec_sum", "chec.msn2", func="sum")`;
+  also `max`, `min`, `avg`, `pwm`, `distance`, with `sshift=`/`eshift=` in bp.
+- Stored bins are **not weighted by overlap** (checked on pymisha 0.20): a
+  heatmap bin covering 40 bp of one stored bin and 10 bp of the next gets
+  their unweighted mean, and `sum` counts both in full. For fixed-bin tracks
+  use `bin_size` = a multiple of the stored bin size and
+  `eh.bins(..., snap=<stored bin size>)` so heatmap bins cover whole stored
+  bins. Stored bin size: `pm.gtrack_info(track)["bin_size"]`.
 - pymisha expressions are Python: NA fill is
   `"np.where(np.isnan(t), 0, t)"`, not R's `ifelse(is.na(...))`.
 - Thresholds for peak calling come from `pm.gquantiles(expr,

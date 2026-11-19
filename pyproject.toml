@@ -42,7 +42,6 @@ pymisha = [
 ]
 test = [
     "pytest>=7.4",
-    "pyBigWig>=0.3.22",
     "ruff>=0.4",
     "scipy>=1.10",
     "scikit-learn>=1.3",

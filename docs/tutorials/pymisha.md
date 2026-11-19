@@ -10,6 +10,7 @@ bundled example database.
 
 ```python
 import numpy as np
+import pandas as pd
 import pymisha as pm
 import enriched_heatmap as eh
 
@@ -71,9 +72,9 @@ NormalizedMatrix(shape=(111, 40), mode='reference_point', upstream=1000, downstr
 
 ## Virtual tracks choose the per-bin aggregation
 
-With an interval iterator, a plain dense track gives the coverage-weighted mean of the
-stored bins under each heatmap bin. For count data (ChEC, ATAC, MNase cuts) you
-usually want the sum; say so with a virtual track:
+With an interval iterator, each heatmap bin gets a value computed from the track's
+stored bins that it touches. A plain track name gives their mean; a virtual track
+picks another aggregator, e.g. the sum for count data (ChEC, ATAC, MNase cuts):
 
 ```python
 pm.gvtrack_create("dense_sum", "dense_track", func="sum")
@@ -89,6 +90,38 @@ print(vals.iloc[:3, 3:])
 2         0.05       0.10       0.08           3
 ```
 
+Stored bins are **not weighted by overlap**. `dense_track` is stored in 50 bp bins; a
+heatmap bin covering 40 bp of one (value 0.1) and 10 bp of the next (value 0) gets
+their plain mean, and `sum` counts both in full:
+
+```python
+probe = pd.DataFrame({"chrom": ["chr1"], "start": [1010], "end": [1060]})
+print(pm.gextract("dense_track", intervals=probe.assign(end=1100), iterator=50)["dense_track"].tolist())
+print(pm.gextract(["dense_track", "dense_sum"], intervals=probe, iterator=probe).iloc[:, 3:5])
+```
+
+```text
+[0.10000000149011612, 0.0]
+   dense_track  dense_sum
+0         0.05        0.1
+```
+
+So for a fixed-bin track, make `bin_size` a multiple of the stored bin size and pass
+`snap=` (the stored bin size) to `eh.bins`. Anchors are rounded down to the track's
+grid, every heatmap bin then covers whole stored bins, and sums are exact:
+
+```python
+snapped = eh.bins(peaks, upstream=1000, downstream=1000, bin_size=50, snap=50, genome=genome)
+print((snapped.start % 50 == 0).all())
+```
+
+```text
+True
+```
+
+The shift is under one stored bin, well below the resolution of the plot. Without
+`snap`, a stored bin straddling two heatmap bins is counted in both.
+
 Shifted views (`sshift=`/`eshift=`), PWM scores (`func="pwm"`) and distances to an
 interval set (`func="distance"`) work the same way: define the virtual track, extract
 it by name. Sparse tracks are NaN where nothing is stored; fill inside the expression
@@ -97,13 +130,11 @@ if zeros are meant, e.g. `"np.where(np.isnan(sparse_track), 0, sparse_track)"`.
 ## Do not tile with an integer iterator
 
 `gextract(expr, intervals=windows, iterator=50)` tiles from the **chromosome start**,
-not from each window's start. A window starting at 1,037 gets bins at 1,037-1,100,
-1,100-1,150, ..., so bins are misaligned between regions and the first and last are
-partial:
+not from each window's start. A window starting at 1,037 gets bins at 1,037-1,050,
+1,050-1,100, 1,100-1,150, ..., so bins are misaligned between regions and the first and
+last are partial:
 
 ```python
-import pandas as pd
-
 w = pd.DataFrame({"chrom": ["chr1"], "start": [1037], "end": [1337]})
 print(pm.gextract("dense_track", intervals=w, iterator=50)[["start", "end"]].T.to_numpy())
 ```

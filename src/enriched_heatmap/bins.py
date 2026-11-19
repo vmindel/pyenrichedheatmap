@@ -65,6 +65,7 @@ def bins(
     id: str | None = None,
     cols: Sequence[str] = ("chrom", "start", "end"),
     strand: str | None = "strand",
+    snap: int | None = None,
 ) -> pd.DataFrame:
     """One row per heatmap bin, ready to pass to ``pymisha.gextract``.
 
@@ -97,6 +98,11 @@ def bins(
         Names of the chrom, start and end columns.
     strand : str or None
         Strand column; ``None`` (or a missing column) treats every region as plus.
+    snap : int, optional
+        Round each anchor down to a multiple of this many bp (reference-point mode).
+        Pass the stored bin size of a fixed-bin track, with ``bin_size`` a multiple of
+        it, so every heatmap bin covers whole stored bins: misha does not weight
+        partially covered stored bins by overlap. Moves anchors by less than ``snap``.
 
     Returns
     -------
@@ -157,6 +163,8 @@ def bins(
             a = np.where(minus, end, start)
         else:
             a = np.where(minus, start, end)
+        if snap:
+            a = a - a % int(snap)
         left_edge = a - n_left * bin_size
         g = np.arange(n_bins)
         b_start = left_edge[:, None] + g[None, :] * bin_size
@@ -210,6 +218,7 @@ def bins(
         "bin_size": int(bin_size),
         "body_bins": int(n_body),
         "anchor": anchor if body_bins is None else None,
+        "snap": int(snap) if snap else None,
         "n_bins": int(n_bins),
     }
     return out
@@ -242,9 +251,11 @@ def matrices(
     values : pandas.DataFrame
         Long table with one row per bin, e.g.
         ``pymisha.gextract(exprs, intervals=bins, iterator=bins, colnames=[...])`` or
-        :func:`read_bigwig`. Rows are matched to ``bins`` by ``intervalID`` (1-based row
-        number in ``bins``, as pymisha returns it). Without ``intervalID`` the table must
-        have the same rows as ``bins``, in the same order.
+        :func:`read_bigwig`. Rows are placed by, in order of preference: ``region`` and
+        ``bin`` columns (present with ``gextract(..., intervals_join="intervals")``),
+        ``intervalID`` (the 1-based row of ``bins``, gextract's default), or else row
+        position, which is accepted only when ``start``/``end`` match ``bins`` row for
+        row.
     bins : pandas.DataFrame
         The table from :func:`bins` that was passed to the extraction.
     columns : list of str, optional
@@ -258,24 +269,36 @@ def matrices(
         given to :func:`bins`. Bins with no row (off the chromosome) are NaN.
     """
     layout = _layout(bins)
-    if "intervalID" in values.columns:
-        pos = values["intervalID"].to_numpy(dtype=np.int64) - 1
-        if pos.size and (pos.min() < 0 or pos.max() >= len(bins)):
-            raise ValueError(
-                "`intervalID` values do not fit `bins`. Pass the same bins table as both "
-                "`intervals` and `iterator` to gextract, and the same table here."
-            )
-    else:
-        if len(values) != len(bins):
-            raise ValueError(
-                f"`values` has {len(values)} rows and no `intervalID`, but `bins` has "
-                f"{len(bins)}; cannot match them."
-            )
-        pos = np.arange(len(bins))
-
     region_ids: pd.Index = layout["regions"]
-    r = region_ids.get_indexer(bins["region"].to_numpy()[pos])
-    b = bins["bin"].to_numpy(dtype=np.int64)[pos]
+    if {"region", "bin"} <= set(values.columns):
+        r = region_ids.get_indexer(values["region"].to_numpy())
+        b = values["bin"].to_numpy(dtype=np.int64)
+        if np.any(r < 0):
+            raise ValueError("`values` has `region` labels that are not in `bins`.")
+    else:
+        if "intervalID" in values.columns:
+            pos = values["intervalID"].to_numpy(dtype=np.int64) - 1
+            if pos.size and (pos.min() < 0 or pos.max() >= len(bins)):
+                raise ValueError(
+                    "`intervalID` values do not fit `bins`. Pass the same bins table as "
+                    "both `intervals` and `iterator` to gextract, and the same table here."
+                )
+        else:
+            same = (
+                len(values) == len(bins)
+                and {"start", "end"} <= set(values.columns)
+                and np.array_equal(values["start"].to_numpy(), bins["start"].to_numpy())
+                and np.array_equal(values["end"].to_numpy(), bins["end"].to_numpy())
+            )
+            if not same:
+                raise ValueError(
+                    "`values` has no `intervalID` (or `region`/`bin`) and its rows do not "
+                    "match `bins` row for row. gextract sorts rows genomically, so keep its "
+                    "default intervals_join, or use intervals_join='intervals'."
+                )
+            pos = np.arange(len(bins))
+        r = region_ids.get_indexer(bins["region"].to_numpy()[pos])
+        b = bins["bin"].to_numpy(dtype=np.int64)[pos]
 
     cols = list(columns) if columns is not None else _value_columns(values)
     if not cols:
