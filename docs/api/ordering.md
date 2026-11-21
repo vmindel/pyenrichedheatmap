@@ -9,3 +9,5 @@
 ::: enriched_heatmap.kmeans
 
 ::: enriched_heatmap.hclust
+
+::: enriched_heatmap.HClust

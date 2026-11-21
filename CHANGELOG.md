@@ -45,8 +45,23 @@ Fixes from a full review of the package. Behaviour changes are marked **(breakin
 - `annotation` returns, for several numeric columns, the image of the last one (all
   share one norm); with any categorical column it returns `{column: result}`.
 - `hclust` raises a `ResourceWarning` above 20,000 regions (distance matrix memory).
+- `Rows` validates its groups (aligned to the index, contiguous, no missing labels)
+  instead of drawing non-contiguous groups wrongly; `spans()` runs in linear time.
+- `heatmap(max_rows="auto")` runs a constrained or tight layout before measuring the
+  axes; it undersampled by about 20% before.
+- The bootstrap band resamples through multinomial counts and matrix products: same
+  statistics, much faster and flat in memory (50,000 x 150 in under a second).
+- The NumPy k-means fallback no longer builds an n x k x d array.
+- Empty-bin RuntimeWarnings from the summary profiles are suppressed.
 
 ### Added
+
+- `hclust` returns an `HClust` named tuple (`order`, `clusters`), still unpackable;
+  `arrange(hc)` takes it directly and uses its clusters as groups.
+- `figure(..., pyplot=False)` and `plot(..., pyplot=False)` return a plain `Figure`
+  that is not registered with pyplot, so loops do not leak figures. Importing the
+  package no longer imports `matplotlib.pyplot`.
+- `profile(..., n_boot=)` for the bootstrap band.
 
 - `plot(..., annotation_legend=True, annotation_colors="Set2")`: categorical
   annotation strips get a legend in the right margin and their own palette.

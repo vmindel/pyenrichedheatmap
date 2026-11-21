@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.figure import Figure
 
 from enriched_heatmap import draw
 from enriched_heatmap._matrix import NormalizedMatrix
@@ -20,7 +20,7 @@ class Grid:
     ``profile[i]`` and ``colorbar[i]`` are ``None`` for columns created without them.
     """
 
-    fig: plt.Figure
+    fig: Figure
     heatmap: list = field(default_factory=list)
     profile: list = field(default_factory=list)
     colorbar: list = field(default_factory=list)
@@ -44,12 +44,12 @@ def figure(
     colorbar_height: float = 0.1,
     gap: float = 0.25,
     margins: tuple[float, float, float, float] = (0.7, 0.3, 0.35, 0.55),
-) -> tuple[plt.Figure, Grid]:
+    pyplot: bool = True,
+) -> tuple[Figure, Grid]:
     """Create aligned columns: profile on top, heatmap body, colour bar below.
 
     All sizes are in inches. Heatmap axes share their y-axis, and each profile shares
-    its x-axis with the heatmap beneath it. The figure is created through pyplot, so
-    close it with ``plt.close(fig)`` when making many in a loop.
+    its x-axis with the heatmap beneath it.
 
     Parameters
     ----------
@@ -64,6 +64,12 @@ def figure(
         Horizontal space between columns.
     margins : (left, right, top, bottom)
         Space around the grid, for group labels, titles and tick labels.
+    pyplot : bool
+        ``True`` creates the figure with ``plt.figure``, so ``plt.show()`` and notebook
+        display work; it also stays registered until ``plt.close(fig)``, which matters
+        when making many figures in a loop. ``False`` returns a plain
+        ``matplotlib.figure.Figure`` that is freed when you drop it; save it with
+        ``fig.savefig``.
 
     Returns
     -------
@@ -80,7 +86,12 @@ def figure(
     tick_room = 0.4  # heatmap x tick labels above the colour bar
     W = left + right + sum(widths) + gap * (n - 1)
     H = top + bottom + ph + (vgap if ph else 0) + height + (ch + tick_room if ch else 0)
-    fig = plt.figure(figsize=(W, H))
+    if pyplot:
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(W, H))
+    else:
+        fig = Figure(figsize=(W, H))
     grid = Grid(fig=fig)
 
     x = left
@@ -137,7 +148,8 @@ def plot(
     agg: str = "mean",
     annotation_colors: str | Mapping | Sequence = "Set2",
     annotation_legend: bool = True,
-) -> tuple[plt.Figure, Grid]:
+    pyplot: bool = True,
+) -> tuple[Figure, Grid]:
     """The standard figure in one call: one heatmap column per matrix.
 
     Everything here is :func:`figure` plus :func:`heatmap`, :func:`profile`,
@@ -173,6 +185,8 @@ def plot(
         so a strip is not mistaken for the groups.
     annotation_legend : bool
         Legend in the right margin for every categorical annotation strip.
+    pyplot : bool
+        See :func:`figure`; pass ``False`` to build many figures without leaking them.
 
     Returns
     -------
@@ -193,7 +207,7 @@ def plot(
     ] if annotation_legend else []
     margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.55)
     fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=is_hm,
-                       height=height, margins=margins)
+                       height=height, margins=margins, pyplot=pyplot)
     off = 1 if grouped else 0
 
     limits = {}

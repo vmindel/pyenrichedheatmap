@@ -246,3 +246,58 @@ def test_heatmap_rows_missing_from_matrix_are_nan():
     arr = np.asarray(im.get_array())
     assert arr.shape[0] == 2
     assert np.isnan(arr[1]).all() and np.isfinite(arr[0]).all()
+
+
+# ---------------------------------------------------------------------------
+# max_rows="auto" under a layout engine, and figures without pyplot
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("layout", ["constrained", "tight"])
+def test_auto_max_rows_measures_the_laid_out_axes(layout):
+    rng = np.random.default_rng(0)
+    big = eh.NormalizedMatrix(rng.random((20000, 20)), upstream=500, downstream=500, bin_size=50)
+    fig, axes = plt.subplots(2, 1, figsize=(3, 6), height_ratios=[1, 4], layout=layout)
+    im = eh.heatmap(big, axes[1], max_rows="auto")
+    drawn = np.asarray(im.get_array()).shape[0]
+    fig.canvas.draw()  # the layout engine moves the axes
+    final = round(axes[1].get_window_extent().height / fig.dpi * 300)
+    # the heatmap's own tick labels nudge the layout a little afterwards (~3%); unmeasured
+    # axes were 20% off
+    assert drawn == pytest.approx(final, rel=0.05)
+
+
+def test_figure_without_pyplot_is_not_registered(tmp_path):
+    from matplotlib.figure import Figure
+
+    before = set(plt.get_fignums())
+    fig, grid = eh.figure([1.0, 1.0], pyplot=False)
+    assert isinstance(fig, Figure) and set(plt.get_fignums()) == before
+    m = _mat()
+    fig2, grid2 = eh.plot(m, rows=eh.arrange(m), pyplot=False)
+    assert set(plt.get_fignums()) == before
+    fig2.savefig(tmp_path / "x.png")  # a plain Figure can still be saved
+    assert (tmp_path / "x.png").stat().st_size > 0
+    fig3, _ = eh.figure([1.0])
+    assert set(plt.get_fignums()) - before == {fig3.number}  # default stays pyplot-managed
+
+
+def test_importing_the_package_does_not_import_pyplot():
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, enriched_heatmap; print('matplotlib.pyplot' in sys.modules)"],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "False"
+
+
+def test_profile_bootstrap_band_is_exposed_and_reproducible():
+    m = _mat()
+    fig, ax = plt.subplots()
+    eh.profile(m, ax, band="boot", n_boot=50)
+    assert len(ax.collections) == 1
+    f2, a2 = plt.subplots()
+    eh.profile(m, a2, band="boot", n_boot=50)
+    np.testing.assert_array_equal(ax.collections[0].get_paths()[0].vertices,
+                                  a2.collections[0].get_paths()[0].vertices)

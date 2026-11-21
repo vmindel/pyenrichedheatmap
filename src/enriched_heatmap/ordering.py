@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,22 @@ OrderMetric = (
 
 
 _HCLUST_WARN_ROWS = 20_000
+
+
+class HClust(NamedTuple):
+    """Result of :func:`hclust`; unpacks as ``order, clusters`` and can be given to
+    :func:`arrange` directly.
+
+    Attributes
+    ----------
+    order : pandas.Index
+        Region identifiers in dendrogram leaf order.
+    clusters : pandas.Series or None
+        Ordered categorical cluster labels, ``None`` when ``k`` was not given.
+    """
+
+    order: pd.Index
+    clusters: pd.Series | None
 
 
 def _center_bin_mask(
@@ -236,9 +252,14 @@ def _build_joint_features(
 def _numpy_kmeans(
     X: np.ndarray, k: int, n_init: int = 10, max_iter: int = 100, random_state: int = 42
 ) -> np.ndarray:
-    """Lightweight k-means++ fallback when scikit-learn is not installed."""
+    """Lightweight k-means++ fallback when scikit-learn is not installed.
+
+    Seeded and deterministic, but it draws random numbers differently from
+    scikit-learn, so the two give different (equally valid) clusterings for one seed.
+    """
     rng = np.random.default_rng(random_state)
     n_samples = X.shape[0]
+    x2 = np.einsum("ij,ij->i", X, X)
     best_labels = np.zeros(n_samples, dtype=int)
     best_inertia = np.inf
 
@@ -261,7 +282,8 @@ def _numpy_kmeans(
 
         labels = np.zeros(n_samples, dtype=int)
         for _it in range(max_iter):
-            dists = np.sum((X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+            # |x|^2 - 2 x.c + |c|^2 keeps memory at n_samples x k, not n_samples x k x d
+            dists = x2[:, None] - 2.0 * (X @ centers.T) + np.einsum("ij,ij->i", centers, centers)
             new_labels = np.argmin(dists, axis=1)
             if np.array_equal(new_labels, labels) and _it > 0:
                 break
@@ -304,6 +326,9 @@ def kmeans(
         units weigh equally. ``"row_zscore"`` clusters on profile shape only.
     order_clusters : {"descending", "ascending", "none"}
         Number clusters by the mean of the first matrix, strongest first by default.
+    random_state : int
+        Seed. Results are reproducible within one install, but scikit-learn and the
+        NumPy fallback (used when scikit-learn is missing) differ for the same seed.
     label_prefix : str
         Labels are ``C1``, ``C2``, ... by default.
 
@@ -359,7 +384,7 @@ def hclust(
     scale: Literal["zscore", "row_zscore", "none"] = "zscore",
     optimal_ordering: bool = False,
     label_prefix: str = "C",
-) -> tuple[pd.Index, pd.Series | None]:
+) -> HClust:
     """Perform hierarchical clustering across one or multiple aligned tracks.
 
     Memory grows with the square of the number of regions (all pairwise distances);
@@ -368,10 +393,11 @@ def hclust(
 
     Returns
     -------
-    ordered_index : pd.Index
-        Region IDs ordered according to the dendrogram leaves.
-    clusters : pd.Series | None
-        Ordered Categorical cluster Series if ``k`` is provided, otherwise ``None``.
+    HClust
+        ``order``: region IDs in dendrogram leaf order. ``clusters``: ordered
+        categorical Series if ``k`` is given, else ``None``. Unpack it
+        (``order, clusters = hclust(...)``) or pass it as ``eh.arrange(hc)``, which
+        uses the leaf order and, when present, the clusters as groups.
     """
     try:
         from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
@@ -393,7 +419,7 @@ def hclust(
             if k is not None
             else None
         )
-        return region_index.copy(), clusters
+        return HClust(region_index.copy(), clusters)
 
     if n_regions > _HCLUST_WARN_ROWS:
         gb = n_regions * (n_regions - 1) / 2 * 8 / 1e9
@@ -409,7 +435,7 @@ def hclust(
     ordered_index = region_index[leaf_order]
 
     if k is None:
-        return ordered_index, None
+        return HClust(ordered_index, None)
 
     raw_clusters = fcluster(Z, t=min(int(k), n_regions), criterion="maxclust")
     # Preserve visual top-to-bottom appearance order along the dendrogram
@@ -426,7 +452,7 @@ def hclust(
         index=region_index,
         name="cluster",
     )
-    return ordered_index, cluster_series
+    return HClust(ordered_index, cluster_series)
 
 
 def score(

@@ -34,8 +34,8 @@ by_atac = eh.arrange(eh.score(mats["atac"], metric="max"))            # any Seri
 by_class = eh.arrange(mats["chec"], groups=peaks["class"])            # a table column
 by_kmeans = eh.arrange(mats["chec"], groups=eh.kmeans(mats, k=4))     # a clustering
 
-order, clusters = eh.hclust([mats["chec"], mats["atac"]], k=3)
-by_tree = eh.arrange(order, groups=clusters)                          # dendrogram order
+tree = eh.hclust([mats["chec"], mats["atac"]], k=3)    # tree.order, tree.clusters
+by_tree = eh.arrange(tree)                                            # dendrogram order
 
 print(by_class.sizes)
 ```
@@ -54,6 +54,9 @@ dtype: int64
   labels are ordered by their best-scoring row.
 - `eh.kmeans(mats, k)` clusters on all matrices side by side, each z-scored as a whole
   so units do not matter; `scale="row_zscore"` clusters on shape alone.
+- `eh.hclust` returns an `HClust` (`order`, `clusters`); it unpacks as
+  `order, clusters = ...` and `eh.arrange(tree)` uses both. It needs memory for all
+  pairwise distances, so use `eh.kmeans` beyond about 20,000 regions.
 - `eh.arrange(..., index=ids)` restricts the figure to a subset of regions.
 
 ## A layout by hand

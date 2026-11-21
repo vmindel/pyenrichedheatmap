@@ -61,6 +61,10 @@ def _target_rows(ax, n_rows: int, max_rows: int | str | None, dpi: float = 300.0
     if max_rows is None:
         return None
     if max_rows == "auto":
+        fig = ax.figure
+        if fig.get_layout_engine() is not None:
+            # constrained/tight layout only positions axes at draw time; run it first
+            fig.draw_without_rendering()
         bbox = ax.get_window_extent()
         return max(16, int(round(bbox.height / ax.figure.dpi * dpi)))
     return int(max_rows)
@@ -197,8 +201,9 @@ def heatmap(
     max_rows : "auto", int or None
         More rows than this are averaged into this many before drawing. ``"auto"``
         is one row per pixel at 300 dpi, which keeps files small without visible loss.
-        It measures the axes when called, so with ``constrained_layout`` or a later
-        resize pass an explicit number instead. ``None`` draws every row.
+        It measures the axes when called (running a constrained or tight layout first),
+        so after a later resize of the figure pass an explicit number instead. ``None``
+        draws every row.
     agg : str
         How rows are combined when downsampling: ``"mean"``, ``"max"``, ``"absmax"``,
         ``"median"``, ``"q90"``. Use ``"max"`` for sparse, narrow peaks.
@@ -258,6 +263,7 @@ def profile(
     colors: str | Mapping | Sequence = "tab10",
     color: str = "0.15",
     ci: float = 0.95,
+    n_boot: int = 200,
     lw: float = 1.2,
     alpha: float = 0.25,
     ylim: tuple[float, float] | None = None,
@@ -278,6 +284,10 @@ def profile(
     band : {None, "sem", "ci", "boot", "iqr"}
         Shaded band: standard error, normal ``ci`` interval, bootstrap ``ci`` interval
         (with mean), or interquartile range (with median).
+    ci : float
+        Confidence level for the ``"ci"`` and ``"boot"`` bands.
+    n_boot : int
+        Bootstrap resamples for ``band="boot"``.
     by_group : bool
         One line per group (coloured as in :func:`annotation`, which has the same
         default ``colors``), or a single line over all rows.
@@ -307,7 +317,7 @@ def profile(
     else:
         parts = [(None, vals, color)]
     for lbl, block, c in parts:
-        res = compute_profile(block, mode=_PROFILE_MODES[key], ci=ci)
+        res = compute_profile(block, mode=_PROFILE_MODES[key], ci=ci, n_bootstrap=n_boot)
         ax.plot(x, res.center, color=c, lw=lw, label=None if lbl is None else str(lbl))
         if res.lower is not None:
             ax.fill_between(x, res.lower, res.upper, color=c, alpha=alpha, lw=0)

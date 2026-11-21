@@ -168,3 +168,77 @@ def test_hclust_warns_when_the_distance_matrix_would_be_huge(monkeypatch):
     monkeypatch.setattr(ordering, "_HCLUST_WARN_ROWS", 10)
     with pytest.warns(ResourceWarning, match="kmeans"):
         eh.hclust(mat1, k=3)
+
+
+# ---------------------------------------------------------------------------
+# Rows validation, HClust, k-means fallback
+# ---------------------------------------------------------------------------
+def test_rows_reject_groups_that_would_draw_wrongly():
+    idx = pd.Index(list("abcd"))
+    with pytest.raises(ValueError, match="contiguous"):
+        eh.Rows(index=idx, groups=pd.Series(["x", "y", "x", "y"], index=idx))
+    with pytest.raises(ValueError, match="aligned"):
+        eh.Rows(index=idx, groups=pd.Series(["x", "x", "y", "y"], index=idx[::-1]))
+    with pytest.raises(ValueError, match="aligned"):
+        eh.Rows(index=idx, groups=pd.Series(["x", "y"], index=idx[:2]))
+    with pytest.raises(ValueError, match="missing"):
+        eh.Rows(index=idx, groups=pd.Series(["x", "x", None, "y"], index=idx))
+    ok = eh.Rows(index=idx, groups=pd.Series(["x", "x", "y", "y"], index=idx), gap=0.5)
+    assert ok.spans() == [("x", 0, 2, 0.0, 2.0), ("y", 2, 4, 2.5, 4.5)]
+    assert ok.height == 4.5 and ok.labels == ["x", "y"] and ok.sizes.to_dict() == {"x": 2, "y": 2}
+
+
+def test_rows_with_many_groups_are_fast():
+    import time
+
+    n, k = 60_000, 3_000
+    idx = pd.Index(np.arange(n))
+    rows = eh.Rows(index=idx, groups=pd.Series(np.repeat(np.arange(k), n // k), index=idx))
+    t0 = time.perf_counter()
+    for _ in range(20):
+        rows.spans()
+    assert time.perf_counter() - t0 < 2.0
+    assert len(rows.spans()) == k
+
+
+def test_hclust_result_unpacks_and_feeds_arrange():
+    pytest.importorskip("scipy")
+    mat1, mat2 = _make_clustered_matrices()
+    hc = eh.hclust([mat1, mat2], k=3)
+    order, clusters = hc
+    assert isinstance(hc, eh.HClust) and hc.order is order and hc.clusters is clusters
+
+    direct = eh.arrange(hc)
+    manual = eh.arrange(order, groups=clusters)
+    assert direct.index.equals(manual.index) and direct.labels == manual.labels == ["C1", "C2", "C3"]
+
+    own = pd.Series(np.where(np.arange(mat1.n_regions) % 2, "o", "e"), index=mat1.region_index)
+    assert eh.arrange(hc, groups=own).labels == ["o", "e"] or set(eh.arrange(hc, groups=own).labels) == {"o", "e"}
+
+    plain = eh.hclust(mat1)  # no k: clusters is None, order alone is used
+    assert plain.clusters is None
+    assert eh.arrange(plain).groups is None and eh.arrange(plain).index.equals(plain.order)
+
+
+def test_numpy_kmeans_matches_brute_force_and_stays_small():
+    import tracemalloc
+
+    from enriched_heatmap import ordering
+
+    rng = np.random.default_rng(0)
+    centres = rng.normal(0, 8, size=(4, 12))
+    X = np.vstack([c + rng.normal(0, 0.5, size=(50, 12)) for c in centres])
+    labels = ordering._numpy_kmeans(X, k=4, n_init=5, random_state=1)
+    assert [len(set(labels[i * 50:(i + 1) * 50])) for i in range(4)] == [1, 1, 1, 1]
+    assert len(set(labels)) == 4
+    # assignment is to the nearest centre of the final partition
+    cents = np.array([X[labels == c].mean(axis=0) for c in range(4)])
+    brute = np.argmin(((X[:, None, :] - cents[None]) ** 2).sum(axis=2), axis=1)
+    assert np.array_equal(brute, labels)
+
+    wide = rng.normal(size=(3000, 1500))  # the old n x k x d tensor would be ~300 MB
+    tracemalloc.start()
+    ordering._numpy_kmeans(wide, k=8, n_init=1, max_iter=3, random_state=0)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 120e6

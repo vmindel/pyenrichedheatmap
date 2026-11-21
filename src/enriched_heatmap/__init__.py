@@ -22,13 +22,14 @@ from enriched_heatmap.draw import (
     profile,
 )
 from enriched_heatmap.layout import Grid, figure, plot
-from enriched_heatmap.ordering import hclust, kmeans, score
+from enriched_heatmap.ordering import HClust, hclust, kmeans, score
 from enriched_heatmap.rows import Rows, arrange
 
 __version__ = "0.3.0"
 
 __all__ = [
     "Grid",
+    "HClust",
     "NormalizedMatrix",
     "Rows",
     "annotation",
