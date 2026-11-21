@@ -103,11 +103,23 @@ def example_values(
     if bad:
         raise ValueError(f"Unknown example tracks {bad}; choose from {TRACKS}.")
     peaks = example_peaks() if peaks is None else peaks
-    unknown = pd.Index(pd.unique(bins["region"])).difference(peaks.index)
-    if len(unknown):
+    span = bins.groupby("region", sort=False).agg(
+        chrom=("chrom", "first"), lo=("start", "min"), hi=("end", "max")
+    )
+    unknown = span.index.difference(peaks.index)
+    known = span.drop(index=unknown)
+    # Whatever the anchor, the bin window must overlap the peak it was built from.
+    moved = (
+        (peaks["chrom"].astype(str).reindex(known.index) != known["chrom"].astype(str))
+        | (peaks["end"].reindex(known.index) <= known["lo"])
+        | (peaks["start"].reindex(known.index) >= known["hi"])
+    )
+    if len(unknown) or moved.any():
+        bad = list(unknown[:3]) + list(known.index[moved.to_numpy()][:3])
         raise ValueError(
-            f"{len(unknown)} bin regions (e.g. {list(unknown[:3])}) are not in `peaks`. "
-            "Pass the table the bins were built from: example_values(b, tracks, peaks=peaks)."
+            f"{len(unknown) + int(moved.sum())} bin regions (e.g. {bad[:3]}) are not at the "
+            "positions given by `peaks`. Pass the table the bins were built from: "
+            "example_values(b, tracks, peaks=peaks)."
         )
     rng = np.random.default_rng(1)
     amp = rng.lognormal(0.0, 0.5, size=len(peaks))

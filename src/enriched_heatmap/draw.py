@@ -451,9 +451,11 @@ def annotation(
             pal = palette(cats, colors)
             codes = pd.Categorical(series, categories=cats).codes.astype(np.int64)
             lut = mcolors.ListedColormap([pal[c] for c in cats] or ["white"]).with_extremes(bad="white")
-            cat_norm = mcolors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5), max(len(cats), 1))
+            cat_norm = mcolors.BoundaryNorm(np.arange(-0.5, max(len(cats), 1) + 0.5), max(len(cats), 1))
             for _, i0, i1, y0, y1 in rows.spans():
                 block = codes[i0:i1]
+                if block.shape[0] == 0:
+                    continue
                 if target is not None:
                     block = downsample_categorical_rows(block, share(i0, i1))
                 img = np.where(block < 0, np.nan, block).astype(float)[:, None]
@@ -466,6 +468,8 @@ def annotation(
             image = None
             for _, i0, i1, y0, y1 in rows.spans():
                 block = vals[i0:i1]
+                if block.shape[0] == 0:
+                    continue
                 if target is not None:
                     block = downsample_rows(block, share(i0, i1), agg=agg)
                 image = ax.imshow(block, extent=(j, j + 1, y1, y0), aspect="auto", cmap=num_cm,

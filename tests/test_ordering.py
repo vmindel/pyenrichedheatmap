@@ -119,3 +119,52 @@ def test_arrange_gap_and_missing_groups():
     assert rows.sizes.to_dict() == {"a": 30, "b": 30}
     with pytest.raises(KeyError):
         eh.arrange(mat1, groups=groups.iloc[:50])
+
+
+# ---------------------------------------------------------------------------
+# Regressions: group labels that look like masks or positions
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "labels, expected",
+    [
+        ([True, False, True, False, True], [True, False]),
+        ([2, 1, 2, 1, 1], [2, 1]),
+        ([0, 1, 0, 1, 1], [0, 1]),
+        (["b", "a", "b", "a", "a"], ["b", "a"]),
+    ],
+)
+def test_arrange_accepts_bool_and_integer_groups(labels, expected):
+    idx = pd.Index(list("abcde"))
+    rows = eh.arrange(index=idx, groups=pd.Series(labels, index=idx))
+    assert rows.labels == expected
+    assert rows.sizes.sum() == 5
+    # members of each group are contiguous and nothing is lost or duplicated
+    assert sorted(rows.index) == list("abcde")
+    assert rows.groups.loc[rows.index].tolist() == rows.groups.tolist()
+    assert [rows.groups.iloc[i0] for _, i0, _, _, _ in rows.spans()] == expected
+
+
+def test_arrange_bool_groups_with_scores_orders_within_group():
+    mat1, _ = _make_clustered_matrices()
+    bound = pd.Series(np.arange(mat1.n_regions) % 2 == 0, index=mat1.region_index)
+    rows = eh.arrange(mat1, groups=bound)
+    scores = eh.score(mat1)
+    for _, i0, i1, _, _ in rows.spans():
+        block = scores.loc[rows.index[i0:i1]].to_numpy()
+        assert np.all(np.diff(block) <= 0)  # descending inside every group
+
+
+def test_arrange_categorical_groups_drop_unused_categories_in_order():
+    idx = pd.Index(list("abcd"))
+    g = pd.Series(pd.Categorical(["z", "x", "z", "x"], categories=["z", "y", "x"]), index=idx)
+    assert eh.arrange(index=idx, groups=g).labels == ["z", "x"]
+
+
+def test_hclust_warns_when_the_distance_matrix_would_be_huge(monkeypatch):
+    pytest.importorskip("scipy")
+    from enriched_heatmap import ordering
+
+    mat1, _ = _make_clustered_matrices()
+    monkeypatch.setattr(ordering, "_HCLUST_WARN_ROWS", 10)
+    with pytest.warns(ResourceWarning, match="kmeans"):
+        eh.hclust(mat1, k=3)
