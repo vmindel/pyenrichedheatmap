@@ -6,8 +6,9 @@ the result. Drawing functions have the shape ``fn(matrix, ax, rows, **style)``, 
 ``rows`` (from :func:`arrange`) is the one object that keeps every panel aligned.
 """
 
+from enriched_heatmap._bins import bins, matrices, matrix
+from enriched_heatmap._matrix import NormalizedMatrix
 from enriched_heatmap.bigwig import read_bigwig
-from enriched_heatmap.bins import bins, matrices, matrix
 from enriched_heatmap.datasets import example_genome, example_peaks, example_values
 from enriched_heatmap.draw import (
     annotation,
@@ -15,16 +16,16 @@ from enriched_heatmap.draw import (
     group_labels,
     heatmap,
     legend,
+    legends,
     limits,
     palette,
     profile,
 )
 from enriched_heatmap.layout import Grid, figure, plot
-from enriched_heatmap.matrix import NormalizedMatrix
 from enriched_heatmap.ordering import hclust, kmeans, score
 from enriched_heatmap.rows import Rows, arrange
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Grid",
@@ -43,6 +44,7 @@ __all__ = [
     "heatmap",
     "kmeans",
     "legend",
+    "legends",
     "limits",
     "matrices",
     "matrix",

@@ -26,16 +26,26 @@ def example_genome() -> pd.DataFrame:
 def example_peaks(n: int = 1500, seed: int = 0) -> pd.DataFrame:
     """Synthetic peaks: promoters (stranded), enhancers and CTCF sites.
 
+    ``n`` is limited by the toy genome (about 1,600 peaks 3 kb apart).
+
     Columns: ``chrom, start, end, strand, class, bound, score``; the index holds peak
     names. ``bound`` marks peaks occupied by the ChEC-profiled factor; about a third of
     the bound promoters lose binding in the ``chec_ko`` track.
     """
+    if n < 1:
+        raise ValueError("`n` must be positive.")
     rng = np.random.default_rng(seed)
     chroms = rng.choice(list(_GENOME), size=n, p=[0.6, 0.4])
     # Space peaks at least 3 kb apart so windows of +-1 kb do not collide.
     out = []
     for c in _GENOME:
         k = int(np.sum(chroms == c))
+        capacity = _GENOME[c] // 3000 - 10
+        if k > capacity:
+            raise ValueError(
+                f"The toy genome has room for about {int(capacity / 0.4)} peaks 3 kb apart; "
+                f"n={n} puts {k} on {c}, which holds {capacity}. Use a smaller `n`."
+            )
         slots = rng.choice(np.arange(5, _GENOME[c] // 3000 - 5), size=k, replace=False)
         centers = np.sort(slots) * 3000 + rng.integers(-500, 500, size=k)
         out.append(pd.DataFrame({"chrom": c, "center": centers}))
@@ -80,7 +90,9 @@ def example_values(
         after a knockout), ``"atac"``, ``"mnase"`` (nucleosome-depleted region with
         phased nucleosomes) and ``"k4me3"`` (promoters only, downstream of the TSS).
     peaks : pandas.DataFrame, optional
-        The peaks that generate the signal. Default: :func:`example_peaks`.
+        The peaks that generate the signal. Default: :func:`example_peaks`. Pass the
+        same table the bins were built from if it is not the default one; a mismatch
+        raises.
 
     Returns
     -------
@@ -91,6 +103,12 @@ def example_values(
     if bad:
         raise ValueError(f"Unknown example tracks {bad}; choose from {TRACKS}.")
     peaks = example_peaks() if peaks is None else peaks
+    unknown = pd.Index(pd.unique(bins["region"])).difference(peaks.index)
+    if len(unknown):
+        raise ValueError(
+            f"{len(unknown)} bin regions (e.g. {list(unknown[:3])}) are not in `peaks`. "
+            "Pass the table the bins were built from: example_values(b, tracks, peaks=peaks)."
+        )
     rng = np.random.default_rng(1)
     amp = rng.lognormal(0.0, 0.5, size=len(peaks))
     klass = peaks["class"].astype(str).to_numpy()

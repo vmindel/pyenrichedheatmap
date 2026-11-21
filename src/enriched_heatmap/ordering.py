@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap.matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix
 
 OrderMetric = (
     Literal["mean", "median", "max", "sum", "center_mean", "center_max", "enriched_score"]
     | Callable[[NormalizedMatrix], np.ndarray]
 )
+
+
+_HCLUST_WARN_ROWS = 20_000
 
 
 def _center_bin_mask(
@@ -358,6 +362,10 @@ def hclust(
 ) -> tuple[pd.Index, pd.Series | None]:
     """Perform hierarchical clustering across one or multiple aligned tracks.
 
+    Memory grows with the square of the number of regions (all pairwise distances);
+    beyond about 20,000 regions a ``ResourceWarning`` is raised. Prefer :func:`kmeans`
+    there.
+
     Returns
     -------
     ordered_index : pd.Index
@@ -386,6 +394,15 @@ def hclust(
             else None
         )
         return region_index.copy(), clusters
+
+    if n_regions > _HCLUST_WARN_ROWS:
+        gb = n_regions * (n_regions - 1) / 2 * 8 / 1e9
+        warnings.warn(
+            f"hclust on {n_regions:,} regions builds a distance matrix of about {gb:.0f} GB. "
+            "Cluster a subsample, or use kmeans for large tables.",
+            ResourceWarning,
+            stacklevel=2,
+        )
 
     Z = linkage(X, method=method, metric=metric, optimal_ordering=optimal_ordering)
     leaf_order = leaves_list(Z)

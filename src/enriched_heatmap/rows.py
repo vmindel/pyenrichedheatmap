@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap.matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix
 from enriched_heatmap.ordering import OrderMetric, score
 
 
@@ -68,7 +68,7 @@ class Rows:
         return pd.Series({lbl: stop - start for lbl, start, stop, _, _ in self.spans()})
 
 
-def _scores_for(by, index: pd.Index | None, metric: OrderMetric) -> pd.Series | None:
+def _scores_for(by, metric: OrderMetric) -> pd.Series | None:
     if by is None:
         return None
     if isinstance(by, NormalizedMatrix):
@@ -132,7 +132,7 @@ def arrange(
             raise KeyError(f"{len(missing)} regions are not in the `by` order, e.g. {list(missing[:3])}.")
         ordered = by[by.isin(index)]
     else:
-        scores = _scores_for(by, index, metric)
+        scores = _scores_for(by, metric)
         if scores is None:
             ordered = index
         else:
@@ -148,11 +148,15 @@ def arrange(
         missing = ordered[g.isna().to_numpy()]
         raise KeyError(f"{len(missing)} regions have no group, e.g. {list(missing[:3])}.")
     if isinstance(g.dtype, pd.CategoricalDtype):
-        levels = [c for c in g.cat.categories if c in set(g)]
+        present = set(g.unique())
+        levels = [c for c in g.cat.categories if c in present]
     else:
         levels = list(pd.unique(g.to_numpy()))
-    rank = pd.Series(range(len(levels)), index=levels)
-    pos = np.argsort(rank.loc[g.to_numpy()].to_numpy(), kind="stable")
+    # Rank through a plain dict: a bool or integer-labelled Series would make
+    # ``Series.loc[array]`` read the labels as a mask or as positions.
+    rank = {lbl: i for i, lbl in enumerate(levels)}
+    codes = np.fromiter((rank[v] for v in g.to_numpy()), dtype=np.int64, count=len(g))
+    pos = np.argsort(codes, kind="stable")
     ordered = ordered[pos]
     g = g.iloc[pos]
     g.index = ordered

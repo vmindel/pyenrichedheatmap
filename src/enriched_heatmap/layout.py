@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from enriched_heatmap import draw
-from enriched_heatmap.matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix
 from enriched_heatmap.rows import Rows, arrange
 
 
@@ -48,7 +48,8 @@ def figure(
     """Create aligned columns: profile on top, heatmap body, colour bar below.
 
     All sizes are in inches. Heatmap axes share their y-axis, and each profile shares
-    its x-axis with the heatmap beneath it.
+    its x-axis with the heatmap beneath it. The figure is created through pyplot, so
+    close it with ``plt.close(fig)`` when making many in a loop.
 
     Parameters
     ----------
@@ -134,6 +135,8 @@ def plot(
     height: float = 5.0,
     group_strip: bool = True,
     agg: str = "mean",
+    annotation_colors: str | Mapping | Sequence = "Set2",
+    annotation_legend: bool = True,
 ) -> tuple[plt.Figure, Grid]:
     """The standard figure in one call: one heatmap column per matrix.
 
@@ -165,6 +168,11 @@ def plot(
         Group colours, used by the group strip and the profile lines.
     group_strip : bool
         With groups, add a labelled colour strip on the left.
+    annotation_colors : colormap name, list or dict
+        Category colours of the annotation strips. Differs from ``colors`` by default
+        so a strip is not mistaken for the groups.
+    annotation_legend : bool
+        Legend in the right margin for every categorical annotation strip.
 
     Returns
     -------
@@ -180,8 +188,12 @@ def plot(
     widths = ([annotation_width] if grouped else []) + [width] * len(names) + \
         [annotation_width] * len(annotations)
     is_hm = ([False] if grouped else []) + [True] * len(names) + [False] * len(annotations)
+    categorical = [
+        n for n, sr in annotations.items() if draw._is_categorical(sr)
+    ] if annotation_legend else []
+    margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.55)
     fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=is_hm,
-                       height=height)
+                       height=height, margins=margins)
     off = 1 if grouped else 0
 
     limits = {}
@@ -209,6 +221,12 @@ def plot(
         draw.annotation(rows.groups.rename(""), grid.heatmap[0], rows, colors=colors, labels=False)
         draw.group_labels(grid.heatmap[0], rows)
 
+    items = []
     for k, (name, series) in enumerate(annotations.items()):
-        draw.annotation(series.rename(name), grid.heatmap[off + len(names) + k], rows)
+        res = draw.annotation(series.rename(name), grid.heatmap[off + len(names) + k], rows,
+                              colors=annotation_colors)
+        if isinstance(res, dict):
+            items.append((name, res))
+    if items and annotation_legend:
+        draw.legends(grid.heatmap[-1], items, x=1.15)
     return fig, grid

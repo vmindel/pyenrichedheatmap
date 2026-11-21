@@ -17,8 +17,8 @@ def _make_mat(n_regions: int = 10, n_bins: int = 20, seed: int = 0) -> eh.Normal
         values=vals,
         region_index=idx,
         mode="reference_point",
-        upstream=100,
-        downstream=100,
+        upstream=n_bins * 5,
+        downstream=n_bins * 5,
         bin_size=10,
         name="ATAC",
     )
@@ -36,7 +36,8 @@ def test_matrix_validation_and_defaults():
         eh.NormalizedMatrix(values=np.zeros(10))
 
     with pytest.raises(ValueError, match="unique"):
-        eh.NormalizedMatrix(values=np.zeros((2, 10)), region_index=pd.Index(["a", "a"]))
+        eh.NormalizedMatrix(values=np.zeros((2, 10)), region_index=pd.Index(["a", "a"]),
+                           upstream=50, downstream=50, bin_size=10)
 
     with pytest.raises(ValueError, match="target_bins"):
         eh.NormalizedMatrix(
@@ -118,7 +119,7 @@ def test_signal_transforms_non_destructive():
     np.testing.assert_allclose(z_row.values.std(axis=1), 1.0, atol=1e-5)
 
     # Constant row should z-score safely to 0 without NaNs
-    const_mat = eh.NormalizedMatrix(values=np.full((2, 10), 5.0))
+    const_mat = eh.NormalizedMatrix(values=np.full((2, 10), 5.0), upstream=50, downstream=50, bin_size=10)
     np.testing.assert_allclose(const_mat.zscore(axis=1).values, 0.0)
 
     clipped = mat.clip_quantile(0.1, 0.9)
@@ -129,11 +130,12 @@ def test_signal_transforms_non_destructive():
     assert sm.shape == mat.shape
     assert sm.values.std() < orig.std()
 
-    # NaN-aware smoothing should not leak NaNs across whole row
+    # NaN-aware smoothing neither spreads NaNs to neighbours nor fills them in
     nan_mat = mat.copy()
     nan_mat.values[0, 5] = np.nan
     sm_nan = nan_mat.smooth(sigma=1.0)
-    assert np.all(np.isfinite(sm_nan.values[0]))
+    assert np.isnan(sm_nan.values[0, 5])
+    assert np.all(np.isfinite(np.delete(sm_nan.values[0], 5)))
 
 
 def test_differential_helpers_and_alignment():

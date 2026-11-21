@@ -14,21 +14,6 @@ DownsampleAgg = (
 )
 
 
-def compute_target_raster_rows(
-    fig_height_inches: float,
-    axes_height_fraction: float,
-    raster_dpi: int = 300,
-    oversample: float = 1.0,
-    min_rows: int = 16,
-    max_rows: int | None = None,
-) -> int:
-    """Compute target raster pixel rows for a heatmap panel given figure height and DPI."""
-    if max_rows is not None:
-        return max(1, int(max_rows))
-    px = int(round(fig_height_inches * axes_height_fraction * raster_dpi * oversample))
-    return max(min_rows, px)
-
-
 def _bucket_edges(n_rows: int, target_rows: int) -> np.ndarray:
     """Return strictly increasing integer bucket boundaries of length ``target_rows + 1``."""
     edges = np.linspace(0, n_rows, target_rows + 1, dtype=np.int64)

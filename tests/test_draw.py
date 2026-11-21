@@ -90,7 +90,8 @@ def test_annotation_kinds():
     assert set(colors) == {"even", "odd"}
     im = eh.annotation(pd.DataFrame({"u": np.arange(40.0), "v": 1.0}, index=m.region_index),
                        axes[1], rows)
-    assert im.get_array().shape[1] == 2
+    assert len(axes[1].images) == 2  # one strip per column, on one shared scale
+    assert axes[1].images[0].norm is axes[1].images[1].norm is im.norm
     eh.annotation(pd.Series(np.arange(40.0), index=m.region_index, name="n"), axes[2], rows, kind="bar")
     assert len(axes[2].patches) == 40
 

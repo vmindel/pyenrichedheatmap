@@ -16,11 +16,36 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap.matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix
 
 _ATTR = "enriched_heatmap"
 _RESERVED = {"chrom", "start", "end", "intervalID", "region", "bin", "chrom1", "start1", "end1"}
 _ANCHORS = ("center", "start", "end")
+
+
+class _Regions:
+    """Region identifiers kept in ``DataFrame.attrs``.
+
+    pandas compares and deep-copies ``attrs`` in operations such as ``merge``; a bare
+    ``pandas.Index`` there makes the comparison ambiguous. This wrapper is immutable,
+    compares by value to a plain bool and is shared rather than copied.
+    """
+
+    __slots__ = ("index",)
+
+    def __init__(self, index: pd.Index) -> None:
+        self.index = index
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Regions) and self.index.equals(other.index)
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __deepcopy__(self, memo: dict) -> _Regions:
+        return self
+
+    def __len__(self) -> int:
+        return len(self.index)
 
 
 def _is_minus(strand: pd.Series) -> np.ndarray:
@@ -135,15 +160,18 @@ def bins(
         )
 
     chrom = regions[c_chrom].astype(str).to_numpy()
+    for c in (c_start, c_end):
+        if regions[c].isna().any():
+            raise ValueError(
+                f"`regions` has {int(regions[c].isna().sum())} missing values in {c!r}; "
+                "drop those rows first."
+            )
     start = regions[c_start].to_numpy(dtype=np.int64)
     end = regions[c_end].to_numpy(dtype=np.int64)
     if np.any(end < start):
         raise ValueError("Found regions with end < start.")
-    minus = (
-        _is_minus(regions[strand])
-        if strand is not None and strand in regions.columns
-        else np.zeros(len(regions), dtype=bool)
-    )
+    use_strand = strand is not None and strand in regions.columns
+    minus = _is_minus(regions[strand]) if use_strand else np.zeros(len(regions), dtype=bool)
     sizes = _genome_sizes(genome)
     if sizes is not None:
         chrom = _match_chroms(chrom, sizes)
@@ -212,7 +240,8 @@ def bins(
         }
     )
     out.attrs[_ATTR] = {
-        "regions": region_ids,
+        "regions": _Regions(region_ids),
+        "strand_oriented": bool(use_strand),
         "upstream": int(upstream),
         "downstream": int(downstream),
         "bin_size": int(bin_size),
@@ -243,6 +272,7 @@ def matrices(
     values: pd.DataFrame,
     bins: pd.DataFrame,
     columns: Sequence[str] | None = None,
+    dtype: Any = np.float32,
 ) -> dict[str, NormalizedMatrix]:
     """Pivot a long per-bin value table into one matrix per value column.
 
@@ -261,6 +291,10 @@ def matrices(
     columns : list of str, optional
         Value columns to pivot. Default: every column that is not a coordinate,
         ``intervalID``, ``region`` or ``bin``.
+    dtype : numpy dtype
+        Storage type of the matrices. ``float32`` (default) halves memory and is exact
+        for integers up to 2**24 (about 16.7 million); pass ``np.float64`` for raw
+        counts beyond that.
 
     Returns
     -------
@@ -269,7 +303,7 @@ def matrices(
         given to :func:`bins`. Bins with no row (off the chromosome) are NaN.
     """
     layout = _layout(bins)
-    region_ids: pd.Index = layout["regions"]
+    region_ids: pd.Index = layout["regions"].index
     if {"region", "bin"} <= set(values.columns):
         r = region_ids.get_indexer(values["region"].to_numpy())
         b = values["bin"].to_numpy(dtype=np.int64)
@@ -306,8 +340,8 @@ def matrices(
     mode = "scale_regions" if layout["body_bins"] else "reference_point"
     out: dict[str, NormalizedMatrix] = {}
     for c in cols:
-        arr = np.full((len(region_ids), layout["n_bins"]), np.nan, dtype=np.float32)
-        arr[r, b] = values[c].to_numpy(dtype=np.float32)
+        arr = np.full((len(region_ids), layout["n_bins"]), np.nan, dtype=dtype)
+        arr[r, b] = values[c].to_numpy(dtype=dtype)
         out[c] = NormalizedMatrix(
             values=arr,
             region_index=region_ids,
@@ -317,12 +351,18 @@ def matrices(
             bin_size=layout["bin_size"],
             target_bins=layout["body_bins"],
             name=str(c),
+            strand_oriented=layout["strand_oriented"],
             metadata={"anchor": layout["anchor"]},
         )
     return out
 
 
-def matrix(values: pd.DataFrame, bins: pd.DataFrame, value: str | None = None) -> NormalizedMatrix:
+def matrix(
+    values: pd.DataFrame,
+    bins: pd.DataFrame,
+    value: str | None = None,
+    dtype: Any = np.float32,
+) -> NormalizedMatrix:
     """Pivot one value column of a long per-bin table into a matrix.
 
     Same as :func:`matrices` for a single column. ``value`` may be omitted when the
@@ -335,4 +375,4 @@ def matrix(values: pd.DataFrame, bins: pd.DataFrame, value: str | None = None) -
         value = cols[0]
     if value not in values.columns:
         raise KeyError(f"`values` has no column {value!r} (columns: {list(values.columns)}).")
-    return matrices(values, bins, columns=[value])[value]
+    return matrices(values, bins, columns=[value], dtype=dtype)[value]
