@@ -188,3 +188,96 @@ def test_pymisha_intervals_join_matches_default(misha_db):
     np.testing.assert_array_equal(joined.values, default.values)
     with pytest.raises(ValueError, match="row for row"):
         eh.matrix(pm.gextract("dense_track", intervals=b, iterator=b, intervals_join="none"), b)
+
+
+# ---------------------------------------------------------------------------
+# Regressions: input validation, layout metadata, dtype
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("col", ["start", "end"])
+def test_bins_rejects_missing_coordinates(col):
+    r = _regions().astype({"start": float, "end": float})
+    r.loc["b", col] = np.nan
+    with pytest.raises(ValueError, match=f"missing values in '{col}'"):
+        eh.bins(r)
+
+
+def test_bins_layout_survives_pandas_operations():
+    import copy
+
+    r = _regions()
+    b = eh.bins(r, upstream=100, downstream=100, bin_size=50, genome=GENOME)
+    vals = b.assign(v=np.arange(len(b), dtype=float), intervalID=np.arange(1, len(b) + 1))
+    ref = eh.matrix(vals, b, "v").values
+
+    # Whether merge/concat carry attrs depends on the pandas version (3.x does, 2.x does
+    # not). Either way they must not raise; with pandas 3 merge used to fail comparing
+    # the region Index stored in attrs.
+    merged = b.merge(b[["region"]].drop_duplicates(), on="region")
+    if merged.attrs:
+        assert np.array_equal(eh.matrix(vals, merged, "v").values, ref, equal_nan=True)
+    else:
+        with pytest.raises(ValueError, match="lost its layout"):
+            eh.matrix(vals, merged, "v")
+    assert len(pd.concat([b, b])) == 2 * len(b)
+    # copies and reorderings keep it on every supported pandas
+    assert eh.matrix(vals, copy.deepcopy(b), "v").values.shape == ref.shape
+    assert eh.matrix(vals, b.copy(), "v").values.shape == ref.shape
+    assert b.sort_values("start").attrs == b.attrs
+
+
+def test_bins_keeps_region_index_name():
+    r = _regions()
+    r.index.name = "peak"
+    b = eh.bins(r, upstream=100, downstream=100, bin_size=50)
+    assert eh.matrix(b.assign(v=1.0), b, "v").region_index.name == "peak"
+
+
+def test_strand_orientation_is_recorded():
+    r = _regions()
+    b = eh.bins(r, upstream=100, downstream=100, bin_size=50)
+    v = b.assign(v=1.0)
+    assert eh.matrix(v, b, "v").strand_oriented is True
+    flat = eh.bins(r, upstream=100, downstream=100, bin_size=50, strand=None)
+    assert eh.matrix(flat.assign(v=1.0), flat, "v").strand_oriented is False
+    no_col = eh.bins(r.drop(columns="strand"), upstream=100, downstream=100, bin_size=50)
+    assert eh.matrix(no_col.assign(v=1.0), no_col, "v").strand_oriented is False
+
+
+def test_matrices_dtype_keeps_large_counts_exact():
+    b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50)
+    v = b.assign(v=16_777_217.0)
+    assert eh.matrix(v, b, "v").values.dtype == np.float32
+    exact = eh.matrix(v, b, "v", dtype=np.float64)
+    assert exact.values.dtype == np.float64
+    assert np.nanmax(exact.values) == 16_777_217.0
+    assert np.nanmax(eh.matrices(v, b, dtype=np.float64)["v"].values) == 16_777_217.0
+
+
+def test_example_peaks_size_limits():
+    assert len(eh.example_peaks(n=1000)) == 1000
+    with pytest.raises(ValueError, match="room for about"):
+        eh.example_peaks(n=2500)
+    with pytest.raises(ValueError, match="positive"):
+        eh.example_peaks(n=0)
+
+
+def test_example_values_reject_bins_from_other_peaks():
+    custom = eh.example_peaks(n=300, seed=3)
+    b = eh.bins(custom, upstream=500, downstream=500, bin_size=50)
+    with pytest.raises(ValueError, match="peaks=peaks"):
+        eh.example_values(b)  # would silently use the 1,500 default peaks
+    out = eh.example_values(b, ["chec"], peaks=custom)
+    assert len(out) == len(b)
+
+
+def test_public_names_are_not_modules():
+    import types
+
+    for name in eh.__all__:
+        assert not isinstance(getattr(eh, name), types.ModuleType), name
+    # eh.bins / eh.matrix are functions, so their modules must not share the name
+    import importlib
+
+    for name in ("bins", "matrix"):
+        with pytest.raises(ImportError):
+            importlib.import_module(f"enriched_heatmap.{name}")

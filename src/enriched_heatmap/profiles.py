@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Literal
 
@@ -80,7 +81,9 @@ def compute_profile(
     n_valid = finite.sum(axis=0)
     has_data = n_valid > 0
 
-    with np.errstate(invalid="ignore", divide="ignore", all="ignore"):
+    with np.errstate(invalid="ignore", divide="ignore", all="ignore"), warnings.catch_warnings():
+        # empty bins are expected and come out as NaN; numpy's "empty slice" warnings add nothing
+        warnings.simplefilter("ignore", RuntimeWarning)
         if mode == "mean":
             center = np.where(has_data, np.nanmean(arr, axis=0), np.nan)
             return ProfileResult(center=center, lower=None, upper=None, n_valid=n_valid)
@@ -112,10 +115,18 @@ def compute_profile(
                     n_valid=n_valid,
                 )
             rng = np.random.default_rng(random_state)
+            # Resample by multinomial row counts: each bootstrap mean is then one matrix
+            # product over the NaN-aware sums, with no n_rows x n_bins copy per resample.
+            filled = np.where(finite, arr, 0.0)
+            ok = finite.astype(np.float64)
+            pvals = np.full(n_rows, 1.0 / n_rows)
             boot_means = np.empty((n_bootstrap, n_bins), dtype=np.float64)
-            for b in range(n_bootstrap):
-                idx = rng.integers(0, n_rows, size=n_rows)
-                boot_means[b] = np.nanmean(arr[idx], axis=0)
+            step = max(1, int(2e7 // n_rows))
+            for lo in range(0, n_bootstrap, step):
+                hi = min(n_bootstrap, lo + step)
+                counts = rng.multinomial(n_rows, pvals, size=hi - lo).astype(np.float64)
+                num, den = counts @ filled, counts @ ok
+                boot_means[lo:hi] = np.where(den > 0, num / np.maximum(den, 1e-300), np.nan)
             alpha = 1.0 - ci
             lower = np.where(has_data, np.nanquantile(boot_means, alpha / 2.0, axis=0), np.nan)
             upper = np.where(

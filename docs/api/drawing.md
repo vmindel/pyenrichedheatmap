@@ -12,6 +12,8 @@
 
 ::: enriched_heatmap.legend
 
+::: enriched_heatmap.legends
+
 ::: enriched_heatmap.limits
 
 ::: enriched_heatmap.palette

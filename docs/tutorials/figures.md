@@ -34,8 +34,8 @@ by_atac = eh.arrange(eh.score(mats["atac"], metric="max"))            # any Seri
 by_class = eh.arrange(mats["chec"], groups=peaks["class"])            # a table column
 by_kmeans = eh.arrange(mats["chec"], groups=eh.kmeans(mats, k=4))     # a clustering
 
-order, clusters = eh.hclust([mats["chec"], mats["atac"]], k=3)
-by_tree = eh.arrange(order, groups=clusters)                          # dendrogram order
+tree = eh.hclust([mats["chec"], mats["atac"]], k=3)    # tree.order, tree.clusters
+by_tree = eh.arrange(tree)                                            # dendrogram order
 
 print(by_class.sizes)
 ```
@@ -54,6 +54,9 @@ dtype: int64
   labels are ordered by their best-scoring row.
 - `eh.kmeans(mats, k)` clusters on all matrices side by side, each z-scored as a whole
   so units do not matter; `scale="row_zscore"` clusters on shape alone.
+- `eh.hclust` returns an `HClust` (`order`, `clusters`); it unpacks as
+  `order, clusters = ...` and `eh.arrange(tree)` uses both. It needs memory for all
+  pairwise distances, so use `eh.kmeans` beyond about 20,000 regions.
 - `eh.arrange(..., index=ids)` restricts the figure to a subset of regions.
 
 ## A layout by hand
@@ -88,21 +91,24 @@ eh.legend(grid.profile[1], eh.palette(rows.labels, "Set2"), bbox_to_anchor=(1.05
 ## Shared scales and differential matrices
 
 Pass the same limits to heatmaps that should be compared; `eh.limits` computes them
-over several matrices. A ratio gets a diverging scale with `center=`:
+over several matrices. A differential matrix (from `log2_ratio` or `subtract`) gets a
+diverging scale centred on 0 without being asked:
 
 ```python
 diff = mats["chec_ko"].log2_ratio(mats["chec"], pseudocount=2.0)
 rows = eh.arrange(mats["chec"], groups=eh.kmeans([mats["chec"], diff], k=3))
 
 fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": diff},
-                    rows=rows, shared=[["WT", "KO"]], center={"log2(KO/WT)": 0},
+                    rows=rows, shared=[["WT", "KO"]],
                     agg="absmax", share_profile_y=False)
 ```
 
 ![Differential](../images/figures-differential.png)
 
 - `shared=[["WT", "KO"]]` puts both on one colour scale; the ratio keeps its own.
-- `center=0` makes the scale symmetric around 0 with `RdBu_r`.
+- Differential matrices are drawn with `RdBu_r`, symmetric around 0. Pass `center=` (a
+  value, or a dict by column name in `eh.plot`) for a ratio you computed yourself or a
+  different midpoint, or `cmap=` to change the colours.
 - `agg="absmax"` keeps the strongest change, of either sign, when rows are averaged
   for display.
 

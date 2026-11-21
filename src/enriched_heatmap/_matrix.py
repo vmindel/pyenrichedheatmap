@@ -26,10 +26,26 @@ def _format_bp(bp: float) -> str:
     return f"{sign}{abs_bp:g} bp"
 
 
+_SMOOTH_MODES = {
+    # scipy.ndimage boundary mode -> numpy.pad equivalent
+    "nearest": "edge",
+    "reflect": "symmetric",
+    "mirror": "reflect",
+    "wrap": "wrap",
+    "constant": "constant",
+}
+
+
 def _gaussian_smooth_1d_nan_aware(
     values: np.ndarray, sigma: float, mode: str = "nearest"
 ) -> np.ndarray:
-    """1D Gaussian smoothing along axis=1 that properly ignores NaN entries."""
+    """1D Gaussian smoothing along axis=1 that ignores NaN entries.
+
+    NaN bins stay NaN: they are excluded from their neighbours' averages but never
+    filled in from them.
+    """
+    if mode not in _SMOOTH_MODES:
+        raise ValueError(f"`mode` must be one of {sorted(_SMOOTH_MODES)}, got {mode!r}.")
     if sigma <= 0:
         return values.copy()
 
@@ -43,14 +59,14 @@ def _gaussian_smooth_1d_nan_aware(
         num = gaussian_filter1d(filled, sigma=sigma, axis=1, mode=mode)
         den = gaussian_filter1d(weights, sigma=sigma, axis=1, mode=mode)
     except ImportError:
-        radius = max(1, int(np.ceil(4.0 * sigma)))
+        radius = max(1, int(4.0 * sigma + 0.5))  # scipy's default truncate=4.0
         x = np.arange(-radius, radius + 1, dtype=np.float64)
         kernel = np.exp(-0.5 * (x / sigma) ** 2)
         kernel /= kernel.sum()
 
-        pad_mode = "edge" if mode == "nearest" else "reflect"
-        padded_num = np.pad(filled, ((0, 0), (radius, radius)), mode=pad_mode)
-        padded_den = np.pad(weights, ((0, 0), (radius, radius)), mode=pad_mode)
+        pad = ((0, 0), (radius, radius))
+        padded_num = np.pad(filled, pad, mode=_SMOOTH_MODES[mode])
+        padded_den = np.pad(weights, pad, mode=_SMOOTH_MODES[mode])
 
         n_bins = values.shape[1]
         num = np.zeros_like(filled)
@@ -60,7 +76,7 @@ def _gaussian_smooth_1d_nan_aware(
             den += w * padded_den[:, k_idx : k_idx + n_bins]
 
     with np.errstate(invalid="ignore", divide="ignore"):
-        out = np.where(den > 1e-12, num / den, np.nan)
+        out = np.where(finite & (den > 1e-12), num / den, np.nan)
     return out.astype(values.dtype, copy=False)
 
 
@@ -119,7 +135,7 @@ class _MatrixILocIndexer:
         return self._matrix._subset_positions(positions)
 
 
-@dataclass
+@dataclass(eq=False)
 class NormalizedMatrix:
     """Genomic signal matrix with explicit region alignment and coordinate geometry.
 
@@ -145,6 +161,11 @@ class NormalizedMatrix:
         Whether minus-strand regions have been oriented 5' -> 3'.
     metadata : dict[str, Any]
         Arbitrary metadata (e.g., loader provenance, differential flags, units).
+
+    Notes
+    -----
+    Instances compare by identity. Compare contents with
+    ``np.array_equal(a.values, b.values)`` and ``a.region_index.equals(b.region_index)``.
     """
 
     values: np.ndarray
@@ -206,10 +227,35 @@ class NormalizedMatrix:
                     )
                 self.target_bins = int(inferred)
 
+        self._check_geometry(arr.shape[1])
+
         if self.metadata is None:
             self.metadata = {}
         else:
             self.metadata = dict(self.metadata)
+
+    def _check_geometry(self, n_bins: int) -> None:
+        """The column count must follow from the flanks and bin size, or ticks lie."""
+        if self.mode == "reference_point" and self.upstream == 0 and self.downstream == 0:
+            return
+        if self.upstream % self.bin_size or self.downstream % self.bin_size:
+            raise ValueError(
+                f"`upstream` ({self.upstream}) and `downstream` ({self.downstream}) must be "
+                f"multiples of `bin_size` ({self.bin_size})."
+            )
+        expected = self.upstream // self.bin_size + self.target_bins + (
+            self.downstream // self.bin_size
+        )
+        if n_bins != expected:
+            raise ValueError(
+                f"`values` has {n_bins} columns but upstream={self.upstream}, "
+                f"downstream={self.downstream}, bin_size={self.bin_size}"
+                + (f", target_bins={self.target_bins}" if self.mode == "scale_regions" else "")
+                + f" imply {expected}."
+            )
+
+    def _geometry(self) -> tuple:
+        return (self.mode, self.upstream, self.downstream, self.bin_size, self.target_bins)
 
     # ------------------------------------------------------------------
     # Properties & indexers
@@ -376,10 +422,15 @@ class NormalizedMatrix:
     def _align_other(self, other: NormalizedMatrix) -> NormalizedMatrix:
         if not isinstance(other, NormalizedMatrix):
             raise TypeError(f"Expected NormalizedMatrix, got {type(other).__name__}.")
-        if other.n_bins != self.n_bins:
+        if other._geometry() != self._geometry():
+            fields = ("mode", "upstream", "downstream", "bin_size", "target_bins")
+            diff = [
+                f"{f}: {a!r} vs {b!r}"
+                for f, a, b in zip(fields, self._geometry(), other._geometry(), strict=True)
+                if a != b
+            ]
             raise ValueError(
-                f"Cannot combine matrices with different n_bins "
-                f"({self.n_bins} vs {other.n_bins})."
+                "Cannot combine matrices with different bin geometry (" + "; ".join(diff) + ")."
             )
         if not other.region_index.equals(self.region_index):
             return other.reindex(self.region_index)

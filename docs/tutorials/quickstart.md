@@ -135,6 +135,9 @@ fig, grid = eh.plot(mats, rows=rows, band="sem",
 - Within each cluster rows are sorted by ChEC; profiles show one line per cluster.
 - `peaks["class"]` and `peaks["score"]` are matched to rows by peak name, so their
   order in the table does not matter.
+- Categorical annotation strips get a legend in the right margin
+  (`annotation_legend=False` turns it off) and use their own palette
+  (`annotation_colors=`), so a strip is not mistaken for the groups.
 - `grid` holds every axes (`grid.heatmap`, `grid.profile`, `grid.colorbar`) for
   further edits.
 

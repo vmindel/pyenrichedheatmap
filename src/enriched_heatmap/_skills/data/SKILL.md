@@ -39,7 +39,8 @@ Run `python scripts/check_regions.py --help`.
 - Strand: `"+"`/`"-"` and `1`/`-1` both work. Matrices come out 5' -> 3';
   never flip them afterwards.
 - Pass the `eh.bins` table unchanged (or boolean-filtered) to the extraction
-  and to `eh.matrices`; its layout lives in `DataFrame.attrs`, which
-  `merge`/`concat` drop.
+  and to `eh.matrices`; its layout lives in `DataFrame.attrs`, which survives
+  `copy` and sorting but not `to_csv`/`to_parquet`, and `merge`/`concat` keep it
+  only on newer pandas (3.x).
 - Every drawing function takes the same `rows`; build it once with
   `eh.arrange(by, groups=...)`.

@@ -33,12 +33,35 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-          # Optional backends: their tests are skipped where they do not install.
-          pip install pyBigWig || echo "pyBigWig unavailable; its test will be skipped"
-          pip install pymisha || echo "pymisha unavailable; its tests will be skipped"
+          # Linux must have both backends, so their tests cannot silently skip there.
+          # Elsewhere they are best effort and skipped where they do not install.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            pip install pyBigWig pymisha
+          else
+            pip install pyBigWig || echo "pyBigWig unavailable; its test will be skipped"
+            pip install pymisha || echo "pymisha unavailable; its tests will be skipped"
+          fi
 
       - name: Lint
         run: ruff check src tests docs/run_docs.py
 
       - name: Test
         run: pytest -ra
+
+  docs:
+    name: docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build strictly
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[docs]"
+          mkdocs build --strict

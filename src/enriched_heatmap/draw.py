@@ -9,9 +9,10 @@ import matplotlib as mpl
 import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
+from matplotlib.legend import Legend
 from matplotlib.patches import Patch, Rectangle
 
-from enriched_heatmap.matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix
 from enriched_heatmap.profiles import compute_profile
 from enriched_heatmap.raster import (
     downsample_1d_rows,
@@ -60,6 +61,10 @@ def _target_rows(ax, n_rows: int, max_rows: int | str | None, dpi: float = 300.0
     if max_rows is None:
         return None
     if max_rows == "auto":
+        fig = ax.figure
+        if fig.get_layout_engine() is not None:
+            # constrained/tight layout only positions axes at draw time; run it first
+            fig.draw_without_rendering()
         bbox = ax.get_window_extent()
         return max(16, int(round(bbox.height / ax.figure.dpi * dpi)))
     return int(max_rows)
@@ -93,6 +98,17 @@ def _norm(
     return mcolors.Normalize(vmin=lo, vmax=hi)
 
 
+def _center_for(mats: Sequence[NormalizedMatrix], center: float | None) -> float | None:
+    """Differential matrices (``subtract``, ``log2_ratio``) are centred on 0 unless told otherwise."""
+    if center is None and mats and all(m.metadata.get("is_differential") for m in mats):
+        return 0.0
+    return center
+
+
+def _set_ylim(ax, rows: Rows) -> None:
+    ax.set_ylim(rows.height or 1.0, 0)
+
+
 def limits(
     matrices: Sequence[NormalizedMatrix] | Mapping[str, NormalizedMatrix],
     q: float = 0.99,
@@ -101,9 +117,11 @@ def limits(
     """``(vmin, vmax)`` over several matrices, to put them on one colour scale.
 
     With ``center`` the range is symmetric around it; otherwise it runs from
-    ``min(0, data)`` to the ``q`` quantile of all values.
+    ``min(0, data)`` to the ``q`` quantile of all values. Differential matrices
+    (from ``subtract`` or ``log2_ratio``) are centred on 0 when ``center`` is not given.
     """
     mats = list(matrices.values()) if isinstance(matrices, Mapping) else list(matrices)
+    center = _center_for(mats, center)
     vals = np.concatenate([m.values.ravel() for m in mats])
     n = _norm(vals, None, None, q, center)
     return float(n.vmin), float(n.vmax)
@@ -131,7 +149,7 @@ def _xaxis(mat: NormalizedMatrix, ax, labels, guides: bool, ticks: bool) -> None
 def _frame_groups(ax, rows: Rows, x0: float, x1: float, frame: bool) -> None:
     for s in ax.spines.values():
         s.set_visible(False)
-    ax.set_ylim(rows.height, 0)
+    _set_ylim(ax, rows)
     ax.set_yticks([])
     if frame:
         for _, _, _, y0, y1 in rows.spans():
@@ -176,13 +194,16 @@ def heatmap(
         Quantile used for ``vmax`` when it is not given, so a few hot bins do not wash
         out the rest. ``None`` uses the maximum.
     center : float, optional
-        Diverging scale around this value (e.g. 0 for a log2 ratio).
+        Diverging scale around this value (e.g. 0 for a log2 ratio). Differential
+        matrices (from ``subtract`` or ``log2_ratio``) default to ``center=0``.
     norm : matplotlib.colors.Normalize, optional
         Overrides ``vmin``/``vmax``/``q``/``center``.
     max_rows : "auto", int or None
         More rows than this are averaged into this many before drawing. ``"auto"``
         is one row per pixel at 300 dpi, which keeps files small without visible loss.
-        ``None`` draws every row.
+        It measures the axes when called (running a constrained or tight layout first),
+        so after a later resize of the figure pass an explicit number instead. ``None``
+        draws every row.
     agg : str
         How rows are combined when downsampling: ``"mean"``, ``"max"``, ``"absmax"``,
         ``"median"``, ``"q90"``. Use ``"max"`` for sparse, narrow peaks.
@@ -204,6 +225,7 @@ def heatmap(
     """
     rows = _rows_for(mat.region_index, rows)
     vals = mat.reindex(rows.index).values if not mat.region_index.equals(rows.index) else mat.values
+    center = _center_for([mat], center)
     if norm is None:
         norm = _norm(vals, vmin, vmax, q, center)
     if cmap is None:
@@ -241,6 +263,7 @@ def profile(
     colors: str | Mapping | Sequence = "tab10",
     color: str = "0.15",
     ci: float = 0.95,
+    n_boot: int = 200,
     lw: float = 1.2,
     alpha: float = 0.25,
     ylim: tuple[float, float] | None = None,
@@ -261,9 +284,13 @@ def profile(
     band : {None, "sem", "ci", "boot", "iqr"}
         Shaded band: standard error, normal ``ci`` interval, bootstrap ``ci`` interval
         (with mean), or interquartile range (with median).
+    ci : float
+        Confidence level for the ``"ci"`` and ``"boot"`` bands.
+    n_boot : int
+        Bootstrap resamples for ``band="boot"``.
     by_group : bool
-        One line per group (coloured as in :func:`annotation` with the same
-        ``colors``), or a single line over all rows.
+        One line per group (coloured as in :func:`annotation`, which has the same
+        default ``colors``), or a single line over all rows.
     colors : colormap name, list or dict
         Group colours.
     color : colour
@@ -290,7 +317,7 @@ def profile(
     else:
         parts = [(None, vals, color)]
     for lbl, block, c in parts:
-        res = compute_profile(block, mode=_PROFILE_MODES[key], ci=ci)
+        res = compute_profile(block, mode=_PROFILE_MODES[key], ci=ci, n_bootstrap=n_boot)
         ax.plot(x, res.center, color=c, lw=lw, label=None if lbl is None else str(lbl))
         if res.lower is not None:
             ax.fill_between(x, res.lower, res.upper, color=c, alpha=alpha, lw=0)
@@ -313,12 +340,29 @@ def _is_categorical(s: pd.Series) -> bool:
         or pd.api.types.is_string_dtype(s.dtype)
 
 
+def legends(ax, items: Sequence[tuple[str | None, Mapping]], x: float = 1.05, y: float = 1.0) -> None:
+    """Stack ``(title, {label: colour})`` legends down the right-hand side of ``ax``.
+
+    ``x`` and ``y`` are axes coordinates of the first legend's upper-left corner.
+    """
+    for title, colors in items:
+        handles = [Patch(color=c, label=str(k)) for k, c in colors.items()]
+        leg = Legend(ax, handles, [str(k) for k in colors], title=title, frameon=False,
+                     fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(x, y))
+        ax.add_artist(leg)
+        leg.set_clip_on(False)  # add_artist clips to the axes, and these sit outside
+        y -= 0.028 * (len(handles) + (2.2 if title else 0.6)) + 0.03
+
+
+_ANNOTATION_KINDS = ("auto", "color", "bar")
+
+
 def annotation(
     data: pd.Series | pd.DataFrame,
     ax,
     rows: Rows | None = None,
     kind: str = "auto",
-    colors: str | Mapping | Sequence = "Set2",
+    colors: str | Mapping | Sequence = "tab10",
     cmap: str | mcolors.Colormap = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
@@ -336,48 +380,59 @@ def annotation(
     Parameters
     ----------
     data : Series or DataFrame
-        Indexed by region. A DataFrame draws one strip per column (numeric columns
-        share one colour scale).
+        Indexed by region. A DataFrame draws one strip per column. Each column is
+        categorical or numeric on its own; numeric columns share one colour scale.
     ax : matplotlib.axes.Axes
     rows : Rows, optional
         Same object as for the heatmaps. Regions missing from ``data`` are blank.
     kind : {"auto", "color", "bar"}
-        ``"auto"``: categorical data as a colour strip, numeric data as a colour strip
-        too. ``"bar"`` draws numeric values as horizontal bars.
+        ``"auto"`` and ``"color"`` draw colour strips (categorical or numeric).
+        ``"bar"`` draws one numeric column as horizontal bars.
     colors : colormap name, list or dict
-        Category colours.
+        Category colours. The default matches :func:`profile`, so a group strip and the
+        profile lines agree.
     cmap, vmin, vmax, q, center
         Colour scale for numeric strips, as in :func:`heatmap`.
     legend : bool
-        Legend of categories (categorical data).
+        Legend of categories, one per categorical column, to the right of the axes.
     labels : bool
         Column names under the strip.
 
     Returns
     -------
     dict, AxesImage or Axes
-        ``{category: colour}`` for categorical data (use with :func:`legend`), the image
-        for numeric strips (use with :func:`colorbar`), the axes for bars.
+        For a single column: ``{category: colour}`` for categorical data (use with
+        :func:`legend`), the image for numeric strips (use with :func:`colorbar`), the
+        axes for bars. For several numeric columns, the image of the last one (all share
+        one norm). For several columns of which some are categorical:
+        ``{column: <that column's return value>}``.
     """
+    if kind not in _ANNOTATION_KINDS:
+        raise ValueError(f"`kind` must be one of {_ANNOTATION_KINDS}, got {kind!r}.")
     df = data.to_frame() if isinstance(data, pd.Series) else data
     rows = _rows_for(df.index, rows)
     df = df.reindex(rows.index)
     target = _target_rows(ax, len(rows), max_rows)
     ncol = df.shape[1]
+    if ncol == 0:
+        raise ValueError("`data` has no columns.")
     first = df.iloc[:, 0]
+
+    def share(i0: int, i1: int) -> int:
+        return max(1, int(round(target * (i1 - i0) / max(len(rows), 1))))
 
     if kind == "bar":
         if ncol != 1:
             raise ValueError("kind='bar' takes a single column.")
-        v = first.to_numpy(dtype=np.float64)
+        v = first.to_numpy(dtype=np.float64, na_value=np.nan)
         for _, i0, i1, y0, y1 in rows.spans():
             block = v[i0:i1]
             if target is not None:
-                block = downsample_1d_rows(block, max(1, int(round(target * (i1 - i0) / len(rows)))), agg=agg)
+                block = downsample_1d_rows(block, share(i0, i1), agg=agg)
             h = (y1 - y0) / max(len(block), 1)
             y = y0 + h * np.arange(len(block))
             ax.barh(y, np.nan_to_num(block), height=h, align="edge", color=bar_color, lw=0)
-        ax.set_ylim(rows.height, 0)
+        _set_ylim(ax, rows)
         ax.set_yticks([])
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
@@ -387,45 +442,65 @@ def annotation(
             ax.set_xlabel(str(first.name), fontsize=8)
         return ax
 
-    if _is_categorical(first):
-        cats = (list(first.cat.categories) if isinstance(first.dtype, pd.CategoricalDtype)
-                else sorted(pd.unique(first.dropna()), key=str))
-        cmap_ = palette(cats, colors)
-        codes = pd.Categorical(first, categories=cats).codes.astype(np.int64)
-        lut = mcolors.ListedColormap([cmap_[c] for c in cats] or ["white"])
-        result: Any = cmap_
-        norm = mcolors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5), max(len(cats), 1))
-        for _, i0, i1, y0, y1 in rows.spans():
-            block = codes[i0:i1]
-            if target is not None:
-                block = downsample_categorical_rows(block, max(1, int(round(target * (i1 - i0) / len(rows)))))
-            img = np.where(block < 0, np.nan, block).astype(float)[:, None]
-            ax.imshow(img, extent=(0, 1, y1, y0), aspect="auto", cmap=lut.with_extremes(bad="white"),
-                      norm=norm, interpolation="nearest", rasterized=True)
-        x1 = 1
-        if legend:
-            ax.legend(handles=[Patch(color=cmap_[c], label=str(c)) for c in cats], frameon=False,
-                      fontsize=7, loc="upper left", bbox_to_anchor=(1.05, 1))
-    else:
-        vals = df.to_numpy(dtype=np.float64)
-        norm = _norm(vals, vmin, vmax, q, center)
-        cm = (mpl.colormaps[cmap] if isinstance(cmap, str) else cmap).with_extremes(bad="#eeeeee")
-        for _, i0, i1, y0, y1 in rows.spans():
-            block = vals[i0:i1]
-            if target is not None:
-                block = downsample_rows(block, max(1, int(round(target * (i1 - i0) / len(rows)))), agg=agg)
-            result = ax.imshow(block, extent=(0, ncol, y1, y0), aspect="auto", cmap=cm, norm=norm,
-                               interpolation="nearest", rasterized=True)
-        x1 = ncol
+    categorical = [_is_categorical(df.iloc[:, j]) for j in range(ncol)]
+    numeric = {
+        j: df.iloc[:, j].to_numpy(dtype=np.float64, na_value=np.nan)
+        for j in range(ncol) if not categorical[j]
+    }
+    num_norm = None
+    if numeric:
+        num_norm = _norm(np.concatenate(list(numeric.values())), vmin, vmax, q, center)
+        num_cm = (mpl.colormaps[cmap] if isinstance(cmap, str) else cmap).with_extremes(bad="#eeeeee")
 
-    _frame_groups(ax, rows, 0, x1, frame)
-    ax.set_xlim(0, x1)
+    results: dict[Any, Any] = {}
+    legend_items: list[tuple[str | None, Mapping]] = []
+    for j, col in enumerate(df.columns):
+        series = df.iloc[:, j]
+        if categorical[j]:
+            cats = (list(series.cat.categories) if isinstance(series.dtype, pd.CategoricalDtype)
+                    else sorted(pd.unique(series.dropna()), key=str))
+            pal = palette(cats, colors)
+            codes = pd.Categorical(series, categories=cats).codes.astype(np.int64)
+            lut = mcolors.ListedColormap([pal[c] for c in cats] or ["white"]).with_extremes(bad="white")
+            cat_norm = mcolors.BoundaryNorm(np.arange(-0.5, max(len(cats), 1) + 0.5), max(len(cats), 1))
+            for _, i0, i1, y0, y1 in rows.spans():
+                block = codes[i0:i1]
+                if block.shape[0] == 0:
+                    continue
+                if target is not None:
+                    block = downsample_categorical_rows(block, share(i0, i1))
+                img = np.where(block < 0, np.nan, block).astype(float)[:, None]
+                ax.imshow(img, extent=(j, j + 1, y1, y0), aspect="auto", cmap=lut,
+                          norm=cat_norm, interpolation="nearest", rasterized=True)
+            results[col] = pal
+            legend_items.append((str(col) if ncol > 1 else None, pal))
+        else:
+            vals = numeric[j][:, None]
+            image = None
+            for _, i0, i1, y0, y1 in rows.spans():
+                block = vals[i0:i1]
+                if block.shape[0] == 0:
+                    continue
+                if target is not None:
+                    block = downsample_rows(block, share(i0, i1), agg=agg)
+                image = ax.imshow(block, extent=(j, j + 1, y1, y0), aspect="auto", cmap=num_cm,
+                                  norm=num_norm, interpolation="nearest", rasterized=True)
+            results[col] = image if image is not None else mpl.cm.ScalarMappable(norm=num_norm, cmap=num_cm)
+
+    _frame_groups(ax, rows, 0, ncol, frame)
+    ax.set_xlim(0, ncol)
     if labels:
         ax.set_xticks(np.arange(ncol) + 0.5, [str(c) for c in df.columns], rotation=90, fontsize=8)
         ax.tick_params(axis="x", length=0)
     else:
         ax.set_xticks([])
-    return result
+    if legend and legend_items:
+        legends(ax, legend_items)
+    if ncol == 1:
+        return results[df.columns[0]]
+    if not any(categorical):
+        return results[df.columns[-1]]  # every strip shares this image's norm
+    return results
 
 
 def group_labels(ax, rows: Rows, counts: bool = True, side: str = "left", fontsize: float = 8) -> None:

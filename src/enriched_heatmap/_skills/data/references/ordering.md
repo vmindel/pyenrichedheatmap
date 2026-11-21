@@ -26,6 +26,7 @@ rows = eh.arrange(by=None, groups=None, metric="center_mean", ascending=False,
   Series `C1..Ck`, numbered by mean of the first matrix, strongest first.
   `mats` can be one matrix, a list or a dict. `scale="row_zscore"` clusters
   on shape. Uses scikit-learn when installed, NumPy otherwise.
-- `order, clusters = eh.hclust(mats, k=3, method="ward")` -> leaf order Index
-  and Series (or None without k). Needs scipy. Use
-  `eh.arrange(order, groups=clusters)`.
+- `tree = eh.hclust(mats, k=3, method="ward")` -> `HClust(order, clusters)`:
+  leaf order Index and cluster Series (None without k); unpacks as
+  `order, clusters = ...`. Needs scipy and O(n^2) memory (warns above 20,000
+  regions; use kmeans there). Use `eh.arrange(tree)`.

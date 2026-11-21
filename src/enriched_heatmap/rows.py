@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap.matrix import NormalizedMatrix
-from enriched_heatmap.ordering import OrderMetric, score
+from enriched_heatmap._matrix import NormalizedMatrix
+from enriched_heatmap.ordering import HClust, OrderMetric, score
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,8 @@ class Rows:
     index : pandas.Index
         Region identifiers, top row first.
     groups : pandas.Series or None
-        Group label of each row, aligned to ``index``. Groups are contiguous.
+        Group label of each row, aligned to ``index``. Groups must be contiguous and
+        free of missing labels; construction raises otherwise.
     gap : float
         Blank space between groups, in rows.
     """
@@ -31,6 +32,21 @@ class Rows:
     index: pd.Index
     groups: pd.Series | None = None
     gap: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.groups is None:
+            return
+        if len(self.groups) != len(self.index) or not self.groups.index.equals(self.index):
+            raise ValueError("`groups` must be a Series aligned to `index`, in the same order.")
+        if self.groups.isna().any():
+            raise ValueError("`groups` must not contain missing labels.")
+        codes, uniques = pd.factorize(self.groups.to_numpy())
+        runs = int(np.count_nonzero(np.diff(codes))) + 1 if len(codes) else 0
+        if runs != len(uniques):
+            raise ValueError(
+                "Groups must be contiguous (all rows of a group together); build `Rows` "
+                "with `arrange`, which sorts them."
+            )
 
     def __len__(self) -> int:
         return len(self.index)
@@ -40,7 +56,7 @@ class Rows:
         """Group labels in drawing order (``[None]`` when ungrouped)."""
         if self.groups is None:
             return [None]
-        return list(pd.unique(self.groups.to_numpy()))
+        return [lbl for lbl, *_ in self.spans()]
 
     def spans(self) -> list[tuple[object, int, int, float, float]]:
         """``(label, first_row, stop_row, y_top, y_bottom)`` for each group.
@@ -50,11 +66,13 @@ class Rows:
         if self.groups is None:
             return [(None, 0, len(self), 0.0, float(len(self)))]
         vals = self.groups.to_numpy()
-        out, y, i = [], 0.0, 0
-        for lbl in self.labels:
-            n = int(np.sum(vals == lbl))
-            out.append((lbl, i, i + n, y, y + n))
-            i += n
+        codes, _ = pd.factorize(vals)
+        starts = np.concatenate([[0], np.flatnonzero(np.diff(codes)) + 1]) if len(codes) else []
+        stops = list(starts[1:]) + [len(vals)]
+        out, y = [], 0.0
+        for i0, i1 in zip(starts, stops, strict=True):
+            n = int(i1 - i0)
+            out.append((vals[i0], int(i0), int(i1), y, y + n))
             y += n + self.gap
         return out
 
@@ -68,7 +86,7 @@ class Rows:
         return pd.Series({lbl: stop - start for lbl, start, stop, _, _ in self.spans()})
 
 
-def _scores_for(by, index: pd.Index | None, metric: OrderMetric) -> pd.Series | None:
+def _scores_for(by, metric: OrderMetric) -> pd.Series | None:
     if by is None:
         return None
     if isinstance(by, NormalizedMatrix):
@@ -82,7 +100,7 @@ def _scores_for(by, index: pd.Index | None, metric: OrderMetric) -> pd.Series | 
 
 
 def arrange(
-    by: NormalizedMatrix | pd.Series | pd.Index | None = None,
+    by: NormalizedMatrix | pd.Series | pd.Index | HClust | None = None,
     groups: pd.Series | None = None,
     metric: OrderMetric = "center_mean",
     ascending: bool = False,
@@ -93,10 +111,11 @@ def arrange(
 
     Parameters
     ----------
-    by : NormalizedMatrix, Series or Index, optional
+    by : NormalizedMatrix, Series, Index or HClust, optional
         A matrix is scored with :func:`score` using ``metric``. A Series is taken as
-        per-region scores. An Index is taken as the order itself (e.g. the leaf order
-        from :func:`hclust`). ``None`` keeps the input order.
+        per-region scores. An Index is taken as the order itself. The result of
+        :func:`hclust` gives its leaf order, and its clusters as ``groups`` unless you
+        pass your own. ``None`` keeps the input order.
     groups : Series, optional
         Group label per region (e.g. from :func:`kmeans`, or a column of your peak
         table). Groups are drawn in category order for a categorical Series; otherwise
@@ -115,6 +134,10 @@ def arrange(
     -------
     Rows
     """
+    if isinstance(by, HClust):
+        if groups is None:
+            groups = by.clusters
+        by = by.order
     if index is None:
         if isinstance(by, NormalizedMatrix):
             index = by.region_index
@@ -132,7 +155,7 @@ def arrange(
             raise KeyError(f"{len(missing)} regions are not in the `by` order, e.g. {list(missing[:3])}.")
         ordered = by[by.isin(index)]
     else:
-        scores = _scores_for(by, index, metric)
+        scores = _scores_for(by, metric)
         if scores is None:
             ordered = index
         else:
@@ -148,11 +171,15 @@ def arrange(
         missing = ordered[g.isna().to_numpy()]
         raise KeyError(f"{len(missing)} regions have no group, e.g. {list(missing[:3])}.")
     if isinstance(g.dtype, pd.CategoricalDtype):
-        levels = [c for c in g.cat.categories if c in set(g)]
+        present = set(g.unique())
+        levels = [c for c in g.cat.categories if c in present]
     else:
         levels = list(pd.unique(g.to_numpy()))
-    rank = pd.Series(range(len(levels)), index=levels)
-    pos = np.argsort(rank.loc[g.to_numpy()].to_numpy(), kind="stable")
+    # Rank through a plain dict: a bool or integer-labelled Series would make
+    # ``Series.loc[array]`` read the labels as a mask or as positions.
+    rank = {lbl: i for i, lbl in enumerate(levels)}
+    codes = np.fromiter((rank[v] for v in g.to_numpy()), dtype=np.int64, count=len(g))
+    pos = np.argsort(codes, kind="stable")
     ordered = ordered[pos]
     g = g.iloc[pos]
     g.index = ordered
