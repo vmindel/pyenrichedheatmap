@@ -209,11 +209,19 @@ def test_bins_layout_survives_pandas_operations():
     vals = b.assign(v=np.arange(len(b), dtype=float), intervalID=np.arange(1, len(b) + 1))
     ref = eh.matrix(vals, b, "v").values
 
-    merged = b.merge(b[["region"]].drop_duplicates(), on="region")  # used to raise
-    assert np.array_equal(eh.matrix(vals, merged, "v").values, ref, equal_nan=True)
+    # Whether merge/concat carry attrs depends on the pandas version (3.x does, 2.x does
+    # not). Either way they must not raise; with pandas 3 merge used to fail comparing
+    # the region Index stored in attrs.
+    merged = b.merge(b[["region"]].drop_duplicates(), on="region")
+    if merged.attrs:
+        assert np.array_equal(eh.matrix(vals, merged, "v").values, ref, equal_nan=True)
+    else:
+        with pytest.raises(ValueError, match="lost its layout"):
+            eh.matrix(vals, merged, "v")
+    assert len(pd.concat([b, b])) == 2 * len(b)
+    # copies and reorderings keep it on every supported pandas
     assert eh.matrix(vals, copy.deepcopy(b), "v").values.shape == ref.shape
-    both = pd.concat([b, b])
-    assert both.attrs  # concat keeps the layout; the pivot would still need matching rows
+    assert eh.matrix(vals, b.copy(), "v").values.shape == ref.shape
     assert b.sort_values("start").attrs == b.attrs
 
 

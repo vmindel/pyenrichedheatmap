@@ -15,8 +15,10 @@ Fixes from a full review of the package. Behaviour changes are marked **(breakin
   categorical, raised on mixed numeric and categorical columns, and ignored a mistyped
   `kind`. Every column now picks categorical or numeric on its own, and `kind` is
   validated. An empty categorical strip no longer raises.
-- `eh.bins` / `eh.matrices` layout in `DataFrame.attrs` made `DataFrame.merge` raise;
-  it now survives `merge`, `concat`, `copy` and `deepcopy`.
+- The `eh.bins` layout in `DataFrame.attrs` made `DataFrame.merge` raise on pandas 3
+  (it compared the stored region Index). It is now compared as a plain bool and shared
+  on `copy`/`deepcopy`. pandas 2.x still drops `attrs` in `merge`/`concat`; the pivot
+  then reports "lost its layout".
 - `eh.bins` silently dropped regions whose start or end was NaN; it now raises.
 - `matrices` always marked matrices as strand-oriented; the flag follows the `strand`
   argument of `bins`.
