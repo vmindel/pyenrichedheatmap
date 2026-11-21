@@ -51,14 +51,20 @@ m = eh.matrix(vals, b, value="atac")     # one column; value optional if only on
 
 - Value columns = every column except chrom/start/end/intervalID/region/bin.
 - Rows follow the region order given to `eh.bins`; missing bins are NaN.
-- "lost its layout" ValueError: `b` went through merge/concat. Rebuild it.
+- "lost its layout" ValueError: `b` was rebuilt from scratch or written to disk
+  (CSV/parquet drop `DataFrame.attrs`). Rebuild it with `eh.bins`.
+- `eh.matrices(..., dtype=np.float64)` for raw counts above 16.7 million; the default
+  float32 is exact only up to 2**24.
 
 ## NormalizedMatrix
 
 Fields: `values` (n_regions, n_bins), `region_index`, `mode`
 (`"reference_point"`/`"scale_regions"`), `upstream`, `downstream`,
 `bin_size`, `target_bins`, `name`. Build one directly from an array with
-`eh.NormalizedMatrix(values, region_index=ids, upstream=, downstream=, bin_size=)`.
+`eh.NormalizedMatrix(values, region_index=ids, upstream=, downstream=, bin_size=)`;
+the column count must equal `upstream/bin_size + downstream/bin_size` (plus
+`target_bins`), and `subtract`/`log2_ratio` need identical geometry. Matrices
+compare by identity (`==` is `is`).
 
 Selection: `m.loc[ids]`, `m.iloc[pos]`, `m.reindex(ids)`, `m.dropna_regions()`.
 Transforms (all return new matrices): `log1p`, `log2p(pc)`, `zscore(axis=1)`,

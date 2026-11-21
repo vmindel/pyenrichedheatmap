@@ -340,6 +340,7 @@ def legends(ax, items: Sequence[tuple[str | None, Mapping]], x: float = 1.05, y:
         leg = Legend(ax, handles, [str(k) for k in colors], title=title, frameon=False,
                      fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(x, y))
         ax.add_artist(leg)
+        leg.set_clip_on(False)  # add_artist clips to the axes, and these sit outside
         y -= 0.028 * (len(handles) + (2.2 if title else 0.6)) + 0.03
 
 

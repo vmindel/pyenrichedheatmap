@@ -206,7 +206,11 @@ def test_plot_adds_legends_for_categorical_annotations():
     assert len(legends) == 1  # categorical strip only
     assert legends[0].get_title().get_text() == "class"
     assert {t.get_text() for t in legends[0].get_texts()} == {"a", "b"}
-    assert fig.get_size_inches()[0] > eh.plot(m)[0].get_size_inches()[0] - 0.1
+    # legends sit right of the strips and are not clipped away by the axes
+    assert not legends[0].get_clip_on()
+    fig.canvas.draw()
+    assert legends[0].get_window_extent().x0 > last.get_window_extent().x1
+    assert legends[0].get_window_extent().x1 <= fig.bbox.x1 + 1  # inside the figure margin
 
     fig2, grid2 = eh.plot(m, annotations={"class": _labels(m)}, annotation_legend=False)
     assert not [a for a in grid2.heatmap[-1].artists if a.__class__.__name__ == "Legend"]

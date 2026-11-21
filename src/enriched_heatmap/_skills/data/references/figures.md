@@ -5,7 +5,7 @@ missing from the data are drawn blank/NaN.
 
 ## eh.heatmap(mat, ax, rows, ...)
 
-`cmap` (default Reds, RdBu_r if `center`), `vmin`, `vmax`, `q=0.99` (quantile
+`cmap` (default Reds, RdBu_r if `center`; matrices from `log2_ratio`/`subtract` get `center=0` automatically), `vmin`, `vmax`, `q=0.99` (quantile
 for vmax), `center` (TwoSlopeNorm, symmetric), `norm`, `na_color`,
 `max_rows="auto"` (average down to ~1 row/pixel at 300 dpi; `None` = all
 rows), `agg` (`mean`, `max` for sparse narrow peaks, `absmax` for signed
@@ -20,10 +20,13 @@ default tab10), `color` (single line), `ylim`, `legend`, `title`.
 
 ## eh.annotation(series_or_df, ax, rows, ...)
 
-Categorical -> colour strip (`colors`, default Set2), returns
+Categorical -> colour strip (`colors`, default tab10 like `eh.profile`), returns
 `{category: colour}`; numeric -> colour strip (`cmap`, `vmin`, `vmax`, `q`,
-`center`), returns the image; `kind="bar"` -> horizontal bars. A DataFrame
-draws one strip per column. `legend=True` for categories.
+`center`), returns the image; `kind="bar"` -> horizontal bars (unknown `kind`
+raises). A DataFrame draws one strip per column, each categorical or numeric on
+its own (numeric ones share a scale); with mixed columns it returns
+`{column: result}`. `legend=True` adds one legend per categorical column;
+`eh.legends(ax, [(title, colours), ...])` stacks legends yourself.
 
 Helpers: `eh.group_labels(ax, rows, counts=True)`, `eh.legend(ax, colours)`,
 `eh.colorbar(image, cax, label)`, `eh.limits(mats, q, center)` -> shared
@@ -41,7 +44,9 @@ One column per matrix (dict keys are titles), group strip on the left when
 `rows` has groups, annotation strips on the right. Per-column options as a
 value or dict keyed by name: `cmap`, `center`, `vmax`. `shared=[["WT",
 "KO"]]` for one colour scale; `band`, `share_profile_y`, `colors`, `agg`,
-`width`, `height`. Returns `(fig, grid)`; edit axes afterwards as usual.
+`width`, `height`, `annotation_colors` (default Set2, so strips differ from the
+groups), `annotation_legend` (default True: legends for categorical strips in
+the right margin). Returns `(fig, grid)`; edit axes afterwards as usual.
 
 ## Saving
 

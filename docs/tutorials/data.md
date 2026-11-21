@@ -131,11 +131,12 @@ peak0001  1.624  0.297  1.604  0.269
 | `.log1p()`, `.log2p(pseudocount)` | log transforms |
 | `.zscore(axis=1)` | per-region (or per-bin with `axis=0`) z-score |
 | `.clip_quantile(lo, hi)` | clip to global quantiles |
-| `.smooth(sigma)` | Gaussian smoothing along bins, NaN-aware |
+| `.smooth(sigma)` | Gaussian smoothing along bins; NaN bins stay NaN |
 | `.log2_ratio(other)`, `.subtract(other)` | differential matrices, aligned by region |
 | `.reindex(ids)`, `.dropna_regions()` | change the region set |
 
-A differential matrix goes into `eh.heatmap(..., center=0)` for a diverging scale:
+A differential matrix is drawn on a diverging scale centred on 0 by `eh.heatmap`
+(pass `center=` or `cmap=` to override):
 
 ```python
 diff = mats["chec_ko"].log2_ratio(mats["chec"], pseudocount=1.0)
