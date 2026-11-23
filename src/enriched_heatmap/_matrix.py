@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -88,21 +89,38 @@ class _MatrixLocIndexer:
 
     def __getitem__(self, key: Any) -> NormalizedMatrix:
         idx = self._matrix.region_index
-        if isinstance(key, (np.ndarray, pd.Series, list)) and len(key) > 0:
-            arr = np.asarray(key)
-            if arr.dtype == bool:
+        if isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype):
+            if key.isna().any():
+                raise ValueError("Boolean mask cannot contain NA / missing values.")
+            if not key.index.is_unique or len(key) != len(idx):
+                raise ValueError(
+                    f"Boolean mask length ({len(key)}) does not match "
+                    f"n_regions ({len(idx)})."
+                )
+            aligned = key.reindex(idx)
+            if aligned.isna().any():
+                raise KeyError("Boolean Series index does not match `region_index`.")
+            return self._matrix._subset_positions(np.flatnonzero(aligned.to_numpy(dtype=bool)))
+
+        if isinstance(key, (np.ndarray, pd.Series, pd.Index, pd.api.extensions.ExtensionArray, list)):
+            is_bool = (
+                pd.api.types.is_bool_dtype(getattr(key, "dtype", None))
+                or (isinstance(key, list) and len(key) > 0 and all(isinstance(x, (bool, np.bool_)) for x in key))
+            )
+            if is_bool:
+                if pd.isna(key).any():
+                    raise ValueError("Boolean mask cannot contain NA / missing values.")
+                arr = np.asarray(key, dtype=bool)
                 if len(arr) != len(idx):
                     raise ValueError(
                         f"Boolean mask length ({len(arr)}) does not match "
                         f"n_regions ({len(idx)})."
                     )
-                positions = np.flatnonzero(arr)
-                return self._matrix._subset_positions(positions)
+                return self._matrix._subset_positions(np.flatnonzero(arr))
 
         if isinstance(key, slice):
-            start_pos = 0 if key.start is None else idx.get_loc(key.start)
-            stop_pos = len(idx) if key.stop is None else idx.get_loc(key.stop) + 1
-            positions = np.arange(start_pos, stop_pos, key.step or 1)
+            slc = idx.slice_indexer(key.start, key.stop, key.step)
+            positions = np.arange(*slc.indices(len(idx)))
             return self._matrix._subset_positions(positions)
 
         if np.isscalar(key):
@@ -125,13 +143,29 @@ class _MatrixILocIndexer:
         self._matrix = matrix
 
     def __getitem__(self, key: Any) -> NormalizedMatrix:
+        if isinstance(key, (bool, np.bool_)):
+            raise TypeError("Cannot index by location with a boolean scalar.")
         if np.isscalar(key):
             positions = np.array([int(key)], dtype=int)
         elif isinstance(key, slice):
             positions = np.arange(*key.indices(self._matrix.n_regions))
         else:
-            arr = np.asarray(key)
-            positions = np.flatnonzero(arr) if arr.dtype == bool else arr.astype(int)
+            is_bool = (
+                pd.api.types.is_bool_dtype(getattr(key, "dtype", None))
+                or (isinstance(key, list) and len(key) > 0 and all(isinstance(x, (bool, np.bool_)) for x in key))
+            )
+            if is_bool:
+                if pd.isna(key).any():
+                    raise ValueError("Boolean mask cannot contain NA / missing values.")
+                arr = np.asarray(key, dtype=bool)
+                if len(arr) != self._matrix.n_regions:
+                    raise ValueError(
+                        f"Boolean mask length ({len(arr)}) does not match "
+                        f"n_regions ({self._matrix.n_regions})."
+                    )
+                positions = np.flatnonzero(arr)
+            else:
+                positions = np.asarray(key, dtype=int)
         return self._matrix._subset_positions(positions)
 
 
@@ -267,7 +301,7 @@ class NormalizedMatrix:
 
     def _geometry(self) -> tuple:
         return (self.mode, self.upstream, self.downstream, self.bin_size, self.target_bins,
-                self.centered)
+                self.centered, self.n_bins)
 
     # ------------------------------------------------------------------
     # Properties & indexers
@@ -408,7 +442,8 @@ class NormalizedMatrix:
         """Return a z-scored copy along rows (axis=1) or columns/bins (axis=0)."""
         if axis not in (0, 1):
             raise ValueError(f"`axis` must be 0 or 1, got {axis!r}.")
-        with np.errstate(invalid="ignore", divide="ignore"):
+        with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             mean = np.nanmean(self.values, axis=axis, keepdims=True)
             std = np.nanstd(self.values, axis=axis, ddof=ddof, keepdims=True)
             z = np.where(std > 0, (self.values - mean) / std, 0.0)
@@ -439,7 +474,9 @@ class NormalizedMatrix:
         if not isinstance(other, NormalizedMatrix):
             raise TypeError(f"Expected NormalizedMatrix, got {type(other).__name__}.")
         if other._geometry() != self._geometry():
-            fields = ("mode", "upstream", "downstream", "bin_size", "target_bins", "centered")
+            fields = (
+                "mode", "upstream", "downstream", "bin_size", "target_bins", "centered", "n_bins"
+            )
             diff = [
                 f"{f}: {a!r} vs {b!r}"
                 for f, a, b in zip(fields, self._geometry(), other._geometry(), strict=True)

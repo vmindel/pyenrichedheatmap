@@ -79,10 +79,12 @@ def _enriched_score(matrix: NormalizedMatrix) -> np.ndarray:
         weights[centers == 0.0] = 1.0
         n_up = int(up_mask.sum())
         n_down = int(down_mask.sum())
+        top_up = n_up / (n_up + 1.0) if matrix.centered else 1.0
+        top_down = n_down / (n_down + 1.0) if matrix.centered else 1.0
         if n_up > 0:
-            weights[up_mask] = np.linspace(1.0 / n_up, 1.0, n_up)
+            weights[up_mask] = np.linspace(top_up / n_up, top_up, n_up)
         if n_down > 0:
-            weights[down_mask] = np.linspace(1.0, 1.0 / n_down, n_down)
+            weights[down_mask] = np.linspace(top_down, top_down / n_down, n_down)
     else:
         up_mask = centers < 0.0
         body_mask = (centers >= 0.0) & (centers <= matrix.body_length)
@@ -135,7 +137,8 @@ def _scores(
     if matrix.n_regions == 0:
         return np.empty(0, dtype=np.float64)
 
-    with np.errstate(invalid="ignore", all="ignore"):
+    with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         if metric == "mean":
             return np.nanmean(vals, axis=1)
         if metric == "median":
@@ -192,7 +195,8 @@ def _extract_feature_block(
 
     # Impute NaNs column-wise with median (fallback 0.0)
     if np.any(~np.isfinite(vals)):
-        with np.errstate(invalid="ignore", all="ignore"):
+        with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             col_med = np.nanmedian(vals, axis=0)
         col_med = np.where(np.isfinite(col_med), col_med, 0.0)
         bad_r, bad_c = np.where(~np.isfinite(vals))
@@ -229,13 +233,15 @@ def _build_joint_features(
 
     first_vals, base_index = _extract_feature_block(items[0], region_index=None, scale=scale)
     # Also keep unscaled primary mean per row for deterministic cluster ordering
-    if isinstance(items[0], NormalizedMatrix):
-        primary_raw = np.nanmean(items[0].values, axis=1)
-    elif isinstance(items[0], pd.DataFrame):
-        primary_raw = np.nanmean(items[0].to_numpy(dtype=np.float64), axis=1)
-    else:
-        arr0 = np.asarray(items[0], dtype=np.float64)
-        primary_raw = np.nanmean(arr0 if arr0.ndim == 2 else arr0[:, None], axis=1)
+    with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        if isinstance(items[0], NormalizedMatrix):
+            primary_raw = np.nanmean(items[0].values, axis=1)
+        elif isinstance(items[0], pd.DataFrame):
+            primary_raw = np.nanmean(items[0].to_numpy(dtype=np.float64), axis=1)
+        else:
+            arr0 = np.asarray(items[0], dtype=np.float64)
+            primary_raw = np.nanmean(arr0 if arr0.ndim == 2 else arr0[:, None], axis=1)
 
     blocks = [first_vals]
     for item in items[1:]:
@@ -358,7 +364,8 @@ def kmeans(
 
     unique_raw = np.unique(labels)
     if order_clusters in ("descending", "ascending"):
-        with np.errstate(invalid="ignore", all="ignore"):
+        with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             cluster_means = {
                 c: float(np.nanmean(primary_raw[labels == c])) for c in unique_raw
             }
@@ -400,6 +407,8 @@ def hclust(
         (``order, clusters = hclust(...)``) or pass it as ``eh.arrange(hc)``, which
         uses the leaf order and, when present, the clusters as groups.
     """
+    if k is not None and k < 1:
+        raise ValueError("`k` must be >= 1.")
     try:
         from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
     except ImportError as exc:

@@ -242,3 +242,50 @@ def test_numpy_kmeans_matches_brute_force_and_stays_small():
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < 120e6
+
+
+def test_empty_grouped_rows_and_duplicate_id_validation():
+    empty_idx = pd.Index([], dtype=str)
+    empty_rows = eh.Rows(index=empty_idx, groups=pd.Series([], dtype=object, index=empty_idx))
+    assert empty_rows.spans() == []
+    assert empty_rows.labels == []
+    assert empty_rows.height == 0.0
+    assert len(empty_rows.sizes) == 0
+
+    with pytest.raises(ValueError, match="unique"):
+        eh.Rows(index=pd.Index(["a", "a"]))
+    with pytest.raises(ValueError, match="non-negative"):
+        eh.Rows(index=pd.Index(["a", "b"]), gap=-0.1)
+    with pytest.raises(ValueError, match="unique"):
+        eh.arrange(pd.Index(["a", "a", "b"]), index=pd.Index(["a", "b"]))
+
+
+def test_centered_enriched_score_weights_center_bin_above_flanks():
+    m = eh.NormalizedMatrix(
+        np.array([[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]]),
+        upstream=50,
+        downstream=50,
+        bin_size=50,
+        centered=True,
+    )
+    sc = eh.score(m, "enriched_score")
+    assert sc.iloc[0] > sc.iloc[1]
+
+
+def test_hclust_rejects_non_positive_k_and_all_nan_rows_do_not_warn():
+    import warnings
+
+    mat1, _ = _make_clustered_matrices()
+    with pytest.raises(ValueError, match="k"):
+        eh.hclust(mat1, k=0)
+    with pytest.raises(ValueError, match="k"):
+        eh.hclust(mat1.iloc[:1], k=0)
+
+    nan_mat = mat1.copy()
+    nan_mat.values[0, :] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        _ = eh.score(nan_mat, "mean")
+        _ = eh.score(nan_mat, "median")
+        _ = eh.score(nan_mat, "center_mean")
+        _ = eh.kmeans(nan_mat, k=2)

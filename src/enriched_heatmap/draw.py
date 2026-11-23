@@ -33,23 +33,27 @@ _PROFILE_MODES = {
 }
 
 
-def palette(categories: Sequence[Any], colors: str | Mapping | Sequence = "tab10") -> dict:
+def palette(
+    categories: Sequence[Any], colors: str | mcolors.Colormap | Mapping | Sequence = "tab10"
+) -> dict:
     """Map categories to colours.
 
-    ``colors`` is a matplotlib colormap name, a list of colours (cycled), or a dict;
-    categories missing from a dict fall back to ``tab10``.
+    ``colors`` is a matplotlib colormap name or object, a list of colours (cycled), or a
+    dict; categories missing from a dict fall back to ``tab10``.
     """
     cats = list(categories)
     if isinstance(colors, Mapping):
         fallback = mpl.colormaps["tab10"]
         return {c: colors.get(c, fallback(i % 10)) for i, c in enumerate(cats)}
-    if isinstance(colors, str):
-        cmap = mpl.colormaps[colors]
+    if isinstance(colors, (str, mcolors.Colormap)):
+        cmap = mpl.colormaps[colors] if isinstance(colors, str) else colors
         if isinstance(cmap, mcolors.ListedColormap) and cmap.N <= 20:
             return {c: cmap(i % cmap.N) for i, c in enumerate(cats)}
         n = max(len(cats) - 1, 1)
         return {c: cmap(i / n) for i, c in enumerate(cats)}
     cols = list(colors)
+    if not cols and cats:
+        raise ValueError("`colors` must not be empty.")
     return {c: cols[i % len(cols)] for i, c in enumerate(cats)}
 
 
@@ -80,11 +84,18 @@ def _norm(
     finite = values[np.isfinite(values)]
     if center is not None:
         c = float(center)
-        if vmin is None or vmax is None:
+        if vmin is None and vmax is None:
             span = float(np.quantile(np.abs(finite - c), q if q is not None else 1.0)) if finite.size else 1.0
             span = span if span > 0 else 1.0
-            lo = c - span if vmin is None else float(vmin)
-            hi = c + span if vmax is None else float(vmax)
+            lo, hi = c - span, c + span
+        elif vmin is None:
+            hi = float(vmax)  # type: ignore[arg-type]
+            span = max(hi - c, 1e-9)
+            lo = c - span
+        elif vmax is None:
+            lo = float(vmin)
+            span = max(c - lo, 1e-9)
+            hi = c + span
         else:
             lo, hi = float(vmin), float(vmax)
         return mcolors.TwoSlopeNorm(vmin=min(lo, c - 1e-9), vcenter=c, vmax=max(hi, c + 1e-9))
@@ -120,7 +131,14 @@ def limits(
     ``min(0, data)`` to the ``q`` quantile of all values. Differential matrices
     (from ``subtract`` or ``log2_ratio``) are centred on 0 when ``center`` is not given.
     """
-    mats = list(matrices.values()) if isinstance(matrices, Mapping) else list(matrices)
+    if isinstance(matrices, NormalizedMatrix):
+        mats = [matrices]
+    elif isinstance(matrices, Mapping):
+        mats = list(matrices.values())
+    else:
+        mats = list(matrices)
+    if not mats:
+        raise ValueError("`matrices` must not be empty.")
     center = _center_for(mats, center)
     vals = np.concatenate([m.values.ravel() for m in mats])
     n = _norm(vals, None, None, q, center)
@@ -338,8 +356,12 @@ def profile(
 
 
 def _is_categorical(s: pd.Series) -> bool:
-    return isinstance(s.dtype, pd.CategoricalDtype) or s.dtype == object or s.dtype == bool \
+    return (
+        isinstance(s.dtype, pd.CategoricalDtype)
+        or s.dtype == object
+        or pd.api.types.is_bool_dtype(s.dtype)
         or pd.api.types.is_string_dtype(s.dtype)
+    )
 
 
 def legends(ax, items: Sequence[tuple[str | None, Mapping]], x: float = 1.05, y: float = 1.0) -> None:
@@ -411,7 +433,12 @@ def annotation(
     """
     if kind not in _ANNOTATION_KINDS:
         raise ValueError(f"`kind` must be one of {_ANNOTATION_KINDS}, got {kind!r}.")
-    df = data.to_frame() if isinstance(data, pd.Series) else data
+    if isinstance(data, pd.Series):
+        df = data.to_frame("" if data.name is None else data.name)
+    elif isinstance(data, pd.DataFrame):
+        df = data
+    else:
+        raise TypeError(f"`data` must be a pandas Series or DataFrame, got {type(data).__name__}.")
     rows = _rows_for(df.index, rows)
     if len(df) and len(rows) and not df.index.isin(rows.index).any():
         raise ValueError(
@@ -439,14 +466,21 @@ def annotation(
                 block = downsample_1d_rows(block, share(i0, i1), agg=agg)
             h = (y1 - y0) / max(len(block), 1)
             y = y0 + h * np.arange(len(block))
-            ax.barh(y, np.nan_to_num(block), height=h, align="edge", color=bar_color, lw=0)
+            ax.barh(
+                y,
+                np.where(np.isfinite(block), block, 0.0),
+                height=h,
+                align="edge",
+                color=bar_color,
+                lw=0,
+            )
         _set_ylim(ax, rows)
         ax.set_yticks([])
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
         ax.tick_params(axis="x", labelsize=7, length=2)
         ax.axvline(0, color="0.3", lw=0.5)
-        if labels:
+        if labels and str(first.name):
             ax.set_xlabel(str(first.name), fontsize=8)
         return ax
 
@@ -497,7 +531,7 @@ def annotation(
 
     _frame_groups(ax, rows, 0, ncol, frame)
     ax.set_xlim(0, ncol)
-    if labels:
+    if labels and any(str(c) for c in df.columns):
         ax.set_xticks(np.arange(ncol) + 0.5, [str(c) for c in df.columns], rotation=90, fontsize=8)
         ax.tick_params(axis="x", length=0)
     else:

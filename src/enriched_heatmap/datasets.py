@@ -108,11 +108,11 @@ def example_values(
     )
     unknown = span.index.difference(peaks.index)
     known = span.drop(index=unknown)
-    # Whatever the anchor, the bin window must overlap the peak it was built from.
+    # Whatever the anchor, the bin window must overlap or touch the peak it was built from.
     moved = (
         (peaks["chrom"].astype(str).reindex(known.index) != known["chrom"].astype(str))
-        | (peaks["end"].reindex(known.index) <= known["lo"])
-        | (peaks["start"].reindex(known.index) >= known["hi"])
+        | (peaks["end"].reindex(known.index) < known["lo"])
+        | (peaks["start"].reindex(known.index) > known["hi"])
     )
     if len(unknown) or moved.any():
         bad = list(unknown[:3]) + list(known.index[moved.to_numpy()][:3])

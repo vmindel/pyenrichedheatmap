@@ -348,3 +348,42 @@ def test_centred_matrix_edge_labels_point_inwards():
     assert tl[0].get_horizontalalignment() == "left"
     assert tl[-1].get_horizontalalignment() == "right"
     assert [t.get_text() for t in tl][1] == "0"
+
+
+def test_centered_heatmap_mirrors_single_bound_and_plot_validates_shared():
+    a, b = _mat(seed=1, name="A"), _mat(seed=2, name="B")
+    diff = a.log2_ratio(b)
+    fig, ax = plt.subplots()
+    im = eh.heatmap(diff, ax, vmax=5.0)
+    assert (im.norm.vmin, im.norm.vcenter, im.norm.vmax) == (-5.0, 0.0, 5.0)
+    im_lo = eh.heatmap(diff, plt.subplots()[1], vmin=-4.0)
+    assert (im_lo.norm.vmin, im_lo.norm.vcenter, im_lo.norm.vmax) == (-4.0, 0.0, 4.0)
+
+    with pytest.raises(TypeError, match="shared"):
+        eh.plot({"A": a, "B": b}, shared=["A", "B"], pyplot=False)
+    with pytest.raises(ValueError, match="empty"):
+        eh.plot({}, pyplot=False)
+    with pytest.raises(ValueError, match="empty"):
+        eh.figure([], pyplot=False)
+    with pytest.raises(ValueError, match="empty"):
+        eh.limits([])
+
+
+def test_annotation_nullable_boolean_unnamed_series_and_palette_colormap():
+    m = _mat()
+    nullable = pd.Series(
+        [True, False] * 20, index=m.region_index, dtype="boolean", name="bound"
+    )
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    res = eh.annotation(nullable, ax1)
+    assert isinstance(res, dict) and set(res) == {False, True}
+
+    unnamed = pd.Series(np.arange(40.0), index=m.region_index)
+    eh.annotation(unnamed, ax2)
+    assert [t.get_text() for t in ax2.get_xticklabels()] == []
+    eh.annotation(unnamed, ax3, kind="bar")
+    assert ax3.get_xlabel() == ""
+
+    assert eh.palette(["a", "b"], matplotlib.colormaps["Set2"]) == eh.palette(["a", "b"], "Set2")
+    with pytest.raises(ValueError, match="empty"):
+        eh.palette(["a"], [])
