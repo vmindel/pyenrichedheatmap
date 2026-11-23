@@ -102,11 +102,77 @@ def test_matrices_by_interval_id_in_any_row_order():
         eh.matrix(vals, b)  # two value columns, none named
 
 
-def test_snap_rounds_anchors_down():
+def test_snap_puts_anchor_stored_bin_in_the_middle_bin_on_both_strands():
     b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50, anchor="start", snap=50)
     assert (b.start % 50 == 0).all()
+    assert b.groupby("region").size().max() == 2 + 1 + 2
     a = b[b.region == "a"]
     assert a.start.min() == 1000 - 100
+    # true centre base 1013 (13 bp into stored bin [1000, 1020)), opposite strands
+    regs = pd.DataFrame({"chrom": ["chr1"] * 2, "start": [1003, 1003], "end": [1024, 1024],
+                         "strand": ["+", "-"]}, index=["plus", "minus"])
+    for anchor, base in [("center", {"plus": 1013, "minus": 1013}),
+                         ("start", {"plus": 1003, "minus": 1023}),
+                         ("end", {"plus": 1023, "minus": 1003})]:
+        for bin_size in (20, 60):
+            bb = eh.bins(regs, upstream=120, downstream=120, bin_size=bin_size,
+                         anchor=anchor, snap=20)
+            n_up = 120 // bin_size
+            for rid in regs.index:
+                r = bb[bb.region == rid]
+                mid = r[r.bin == n_up].iloc[0]
+                assert mid.start <= base[rid] < mid.end, (anchor, bin_size, rid)
+                # centred on the stored cell holding the anchor base
+                cell = base[rid] - base[rid] % 20
+                assert (mid.start + mid.end) // 2 == cell + 10
+                assert len(r) == 2 * n_up + 1
+
+
+def test_snap_end_boundary_on_stored_grid():
+    # end % snap == 0: the last base (end - 1) is in the previous stored bin
+    regs = pd.DataFrame({"chrom": ["chr1"], "start": [900], "end": [1000], "strand": ["+"]},
+                        index=["g"])
+    bb = eh.bins(regs, upstream=40, downstream=40, bin_size=20, anchor="end", snap=20)
+    assert bb[bb.bin == 2].iloc[0].start == 980
+
+
+def test_snap_validation_and_centred_matrix_geometry():
+    r = _regions()
+    with pytest.raises(ValueError, match="odd multiple"):
+        eh.bins(r, upstream=120, downstream=120, bin_size=40, snap=20)
+    with pytest.raises(ValueError, match="odd multiple"):
+        eh.bins(r, upstream=90, downstream=90, bin_size=30, snap=20)
+    with pytest.raises(ValueError, match="body_bins"):
+        eh.bins(r, upstream=100, downstream=100, bin_size=50, body_bins=4, snap=50)
+    b = eh.bins(r, upstream=100, downstream=100, bin_size=50, snap=50)
+    vals = b.copy()
+    vals["x"] = 1.0
+    m = eh.matrix(vals, b, "x")
+    assert m.centered and m.n_bins == 5
+    assert m.x_extent == (-125.0, 125.0)
+    np.testing.assert_allclose(m.bin_centers(), [-100, -50, 0, 50, 100])
+    assert m.guide_positions() == [0.0]
+    ticks, labels = m.default_xticks()
+    assert ticks == [-100.0, 0.0, 100.0]
+    for t in (m.log1p(), m.log2p(1), m.zscore(), m.smooth(1), m.clip_quantile(0, 1),
+              m.loc[["a"]], m.iloc[[0]], m.reindex(["b", "a"]), m.dropna_regions(),
+              m.subtract(m), m.log2_ratio(m), m.copy(),
+              eh.NormalizedMatrix.from_dict(m.to_dict())):
+        assert t.centered and t.x_extent == m.x_extent
+    plain = eh.NormalizedMatrix(np.zeros((3, 4)), upstream=100, downstream=100, bin_size=50)
+    with pytest.raises(ValueError):
+        m.subtract(plain)
+    with pytest.raises(ValueError, match="centered"):
+        eh.NormalizedMatrix(np.zeros((3, 4)), upstream=100, downstream=100, bin_size=50,
+                            centered=True)
+    # center_mean includes the anchor bin; enriched_score is symmetric about it
+    sym = eh.NormalizedMatrix(np.array([[1.0, 2, 5, 2, 1], [1.0, 2, 5, 2, 9]]),
+                              upstream=100, downstream=100, bin_size=50, centered=True)
+    assert eh.score(sym, "center_max").iloc[0] == 5
+    flipped = eh.NormalizedMatrix(sym.values[:, ::-1].copy(), upstream=100, downstream=100,
+                                  bin_size=50, centered=True)
+    np.testing.assert_allclose(eh.score(sym, "enriched_score").values,
+                               eh.score(flipped, "enriched_score").values)
 
 
 def test_bins_validation():

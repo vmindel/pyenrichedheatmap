@@ -24,8 +24,12 @@ b = eh.bins(regions, upstream=1000, downstream=1000, bin_size=20,
   first. Without `genome` only bins before 0 are dropped, and pymisha will
   error on bins past a chromosome end.
 - Duplicate region identifiers raise ValueError; `reset_index()` or `id=`.
-- `snap=n` rounds anchors down to a multiple of `n` (reference-point only), to
-  line bins up with a fixed-bin track's stored grid (see `references/pymisha.md`).
+- `snap=n` (reference-point only) lines bins up with a fixed-bin track's stored
+  grid (see `references/pymisha.md`) and makes the layout **centred**: an extra
+  middle bin holds the stored bin containing the anchor base on both strands, so
+  `upstream/bin_size + 1 + downstream/bin_size` bins, x = 0 is the middle of that
+  bin, `x_extent` is `(-upstream - bin_size/2, downstream + bin_size/2)`.
+  `bin_size` must be an odd multiple of `n` (ValueError otherwise).
 
 ## Filling values
 
@@ -60,10 +64,10 @@ m = eh.matrix(vals, b, value="atac")     # one column; value optional if only on
 
 Fields: `values` (n_regions, n_bins), `region_index`, `mode`
 (`"reference_point"`/`"scale_regions"`), `upstream`, `downstream`,
-`bin_size`, `target_bins`, `name`. Build one directly from an array with
+`bin_size`, `target_bins`, `centered`, `name`. Build one directly from an array with
 `eh.NormalizedMatrix(values, region_index=ids, upstream=, downstream=, bin_size=)`;
 the column count must equal `upstream/bin_size + downstream/bin_size` (plus
-`target_bins`), and `subtract`/`log2_ratio` need identical geometry. Matrices
+`target_bins`, plus 1 with `centered=True`), and `subtract`/`log2_ratio` need identical geometry. Matrices
 compare by identity (`==` is `is`).
 
 Selection: `m.loc[ids]`, `m.iloc[pos]`, `m.reindex(ids)`, `m.dropna_regions()`.

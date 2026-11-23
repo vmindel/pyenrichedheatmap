@@ -75,7 +75,8 @@ def _enriched_score(matrix: NormalizedMatrix) -> np.ndarray:
 
     if matrix.mode == "reference_point":
         up_mask = centers < 0.0
-        down_mask = centers >= 0.0
+        down_mask = centers > 0.0 if matrix.centered else centers >= 0.0
+        weights[centers == 0.0] = 1.0
         n_up = int(up_mask.sum())
         n_down = int(down_mask.sum())
         if n_up > 0:

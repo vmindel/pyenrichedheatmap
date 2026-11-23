@@ -128,10 +128,24 @@ def _pick(value, name: str, default=None):
     return default if value is None else value
 
 
+def _as_annotations(annotations) -> dict[str, pd.Series]:
+    """Normalise ``plot(annotations=...)`` to a dict of name -> Series."""
+    if annotations is None:
+        return {}
+    if isinstance(annotations, pd.DataFrame):
+        return {str(c): annotations[c] for c in annotations.columns}
+    if isinstance(annotations, pd.Series):
+        return {str(annotations.name) if annotations.name is not None else "": annotations}
+    if not isinstance(annotations, Mapping):
+        raise TypeError("`annotations` must be a dict of name -> Series, a Series or a "
+                        f"DataFrame indexed by region, got {type(annotations).__name__}.")
+    return dict(annotations)
+
+
 def plot(
     mats: NormalizedMatrix | Sequence[NormalizedMatrix] | Mapping[str, NormalizedMatrix],
     rows: Rows | None = None,
-    annotations: Mapping[str, pd.Series] | None = None,
+    annotations: Mapping[str, pd.Series] | pd.DataFrame | pd.Series | None = None,
     cmap: str | Mapping[str, str] | None = None,
     center: float | Mapping[str, float] | None = None,
     vmax: float | Mapping[str, float] | None = None,
@@ -148,6 +162,7 @@ def plot(
     agg: str = "mean",
     annotation_colors: str | Mapping | Sequence = "Set2",
     annotation_legend: bool = True,
+    guides: bool = True,
     pyplot: bool = True,
 ) -> tuple[Figure, Grid]:
     """The standard figure in one call: one heatmap column per matrix.
@@ -162,8 +177,9 @@ def plot(
         Columns, left to right. Dict keys are the column titles.
     rows : Rows, optional
         From :func:`arrange`. Default: sorted by the first matrix, no groups.
-    annotations : dict of name to Series, optional
-        Narrow strips to the right of the heatmaps.
+    annotations : dict of name to Series, DataFrame or Series, optional
+        Narrow strips to the right of the heatmaps, one per entry (or per DataFrame
+        column), indexed by region identifier like the matrices.
     cmap, center, vmax : value or dict keyed by column name
         Passed to :func:`heatmap`.
     shared : list of lists of names
@@ -185,6 +201,8 @@ def plot(
         so a strip is not mistaken for the groups.
     annotation_legend : bool
         Legend in the right margin for every categorical annotation strip.
+    guides : bool
+        Dashed reference lines at the anchor (and body end) in heatmaps and profiles.
     pyplot : bool
         See :func:`figure`; pass ``False`` to build many figures without leaking them.
 
@@ -196,7 +214,7 @@ def plot(
     names = list(mats)
     if rows is None:
         rows = arrange(mats[names[0]])
-    annotations = dict(annotations or {})
+    annotations = _as_annotations(annotations)
     grouped = rows.groups is not None and group_strip
 
     widths = ([annotation_width] if grouped else []) + [width] * len(names) + \
@@ -219,10 +237,12 @@ def plot(
         ax = grid.heatmap[off + j]
         lo, hi = limits.get(name, (None, _pick(vmax, name)))
         im = draw.heatmap(mats[name], ax, rows, cmap=_pick(cmap, name), center=_pick(center, name),
-                          vmin=lo, vmax=hi, q=q, agg=agg, title=None if profile else name)
+                          vmin=lo, vmax=hi, q=q, agg=agg, guides=guides,
+                          title=None if profile else name)
         draw.colorbar(im, grid.colorbar[off + j])
         if profile:
-            draw.profile(mats[name], grid.profile[off + j], rows, band=band, colors=colors, title=name)
+            draw.profile(mats[name], grid.profile[off + j], rows, band=band, colors=colors,
+                         guides=guides, title=name)
 
     if profile and share_profile_y:
         axes = [a for a in grid.profile if a is not None]

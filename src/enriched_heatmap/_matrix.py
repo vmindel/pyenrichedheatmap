@@ -161,6 +161,11 @@ class NormalizedMatrix:
         Whether minus-strand regions have been oriented 5' -> 3'.
     metadata : dict[str, Any]
         Arbitrary metadata (e.g., loader provenance, differential flags, units).
+    centered : bool, default False
+        Reference-point only: an extra middle bin is centred on the anchor (from
+        ``eh.bins(..., snap=)``). The matrix has ``upstream/bin_size + 1 +
+        downstream/bin_size`` columns, x = 0 is the middle of the anchor bin and the
+        bins span ``-upstream - bin_size/2`` to ``downstream + bin_size/2``.
 
     Notes
     -----
@@ -178,6 +183,7 @@ class NormalizedMatrix:
     name: str = ""
     strand_oriented: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
+    centered: bool = False
 
     def __post_init__(self) -> None:
         arr = np.asarray(self.values)
@@ -211,6 +217,9 @@ class NormalizedMatrix:
         if self.target_bins < 0:
             raise ValueError("`target_bins` must be non-negative.")
 
+        self.centered = bool(self.centered)
+        if self.centered and self.mode != "reference_point":
+            raise ValueError("`centered` is only valid with mode='reference_point'.")
         if self.mode == "reference_point":
             if self.target_bins != 0:
                 raise ValueError(
@@ -236,14 +245,15 @@ class NormalizedMatrix:
 
     def _check_geometry(self, n_bins: int) -> None:
         """The column count must follow from the flanks and bin size, or ticks lie."""
-        if self.mode == "reference_point" and self.upstream == 0 and self.downstream == 0:
+        if (self.mode == "reference_point" and self.upstream == 0 and self.downstream == 0
+                and not self.centered):
             return
         if self.upstream % self.bin_size or self.downstream % self.bin_size:
             raise ValueError(
                 f"`upstream` ({self.upstream}) and `downstream` ({self.downstream}) must be "
                 f"multiples of `bin_size` ({self.bin_size})."
             )
-        expected = self.upstream // self.bin_size + self.target_bins + (
+        expected = self.upstream // self.bin_size + self.target_bins + int(self.centered) + (
             self.downstream // self.bin_size
         )
         if n_bins != expected:
@@ -251,11 +261,13 @@ class NormalizedMatrix:
                 f"`values` has {n_bins} columns but upstream={self.upstream}, "
                 f"downstream={self.downstream}, bin_size={self.bin_size}"
                 + (f", target_bins={self.target_bins}" if self.mode == "scale_regions" else "")
+                + (", centered=True" if self.centered else "")
                 + f" imply {expected}."
             )
 
     def _geometry(self) -> tuple:
-        return (self.mode, self.upstream, self.downstream, self.bin_size, self.target_bins)
+        return (self.mode, self.upstream, self.downstream, self.bin_size, self.target_bins,
+                self.centered)
 
     # ------------------------------------------------------------------
     # Properties & indexers
@@ -291,6 +303,9 @@ class NormalizedMatrix:
     def x_extent(self) -> tuple[float, float]:
         """(x_min, x_max) coordinates spanned by the bins."""
         if self.mode == "reference_point":
+            if self.centered:
+                half = self.bin_size / 2.0
+                return (-float(self.upstream) - half, float(self.downstream) + half)
             if self.upstream == 0 and self.downstream == 0:
                 return (0.0, float(self.n_bins * self.bin_size))
             return (-float(self.upstream), float(self.downstream))
@@ -322,6 +337,7 @@ class NormalizedMatrix:
             name=self.name if name is None else name,
             strand_oriented=self.strand_oriented,
             metadata=dict(self.metadata) if metadata is None else dict(metadata),
+            centered=self.centered,
         )
 
     def _subset_positions(self, positions: np.ndarray) -> NormalizedMatrix:
@@ -423,7 +439,7 @@ class NormalizedMatrix:
         if not isinstance(other, NormalizedMatrix):
             raise TypeError(f"Expected NormalizedMatrix, got {type(other).__name__}.")
         if other._geometry() != self._geometry():
-            fields = ("mode", "upstream", "downstream", "bin_size", "target_bins")
+            fields = ("mode", "upstream", "downstream", "bin_size", "target_bins", "centered")
             diff = [
                 f"{f}: {a!r} vs {b!r}"
                 for f, a, b in zip(fields, self._geometry(), other._geometry(), strict=True)
@@ -502,12 +518,12 @@ class NormalizedMatrix:
             ticks: list[float] = []
             labels: list[str] = []
             if self.upstream > 0:
-                ticks.append(x_min)
+                ticks.append(-float(self.upstream) if self.centered else x_min)
                 labels.append(_format_bp(-self.upstream))
             ticks.append(0.0)
             labels.append(center_label)
             if self.downstream > 0:
-                ticks.append(x_max)
+                ticks.append(float(self.downstream) if self.centered else x_max)
                 labels.append(_format_bp(self.downstream))
             return ticks, labels
 
@@ -551,6 +567,7 @@ class NormalizedMatrix:
             "name": self.name,
             "strand_oriented": self.strand_oriented,
             "metadata": dict(self.metadata),
+            "centered": self.centered,
         }
 
     @classmethod
@@ -570,11 +587,14 @@ class NormalizedMatrix:
             name=str(payload.get("name", "")),
             strand_oriented=bool(payload.get("strand_oriented", True)),
             metadata=dict(payload.get("metadata", {})),
+            centered=bool(payload.get("centered", False)),
         )
 
     def __repr__(self) -> str:
         label = f" name={self.name!r}" if self.name else ""
         extra = f", target_bins={self.target_bins}" if self.mode == "scale_regions" else ""
+        if self.centered:
+            extra += ", centered=True"
         return (
             f"NormalizedMatrix(shape={self.shape}, mode={self.mode!r}, "
             f"upstream={self.upstream}, downstream={self.downstream}, "
