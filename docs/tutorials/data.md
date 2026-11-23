@@ -107,8 +107,9 @@ print(list(mats))
 ## The matrix object
 
 A `NormalizedMatrix` is a 2D array plus its region index and bin geometry. Rows are
-selected by label or position like a pandas object, and every transform returns a new
-matrix:
+selected by label or position like a pandas object (a boolean Series is aligned to the
+region index by label; use `.to_numpy()` for a positional mask), and every transform
+returns a new matrix:
 
 ```python
 m = mats["chec"]

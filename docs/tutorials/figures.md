@@ -49,7 +49,7 @@ dtype: int64
 
 - `eh.score` metrics: `"center_mean"` (default), `"center_max"`, `"mean"`, `"max"`,
   `"sum"`, `"median"`, `"enriched_score"` (R EnrichedHeatmap's distance-weighted
-  score), or a function of the matrix.
+  score; flank weights stay below the middle bin on a `snap` matrix), or a function of the matrix.
 - Categorical groups keep their category order (here promoter, enhancer, CTCF); other
   labels are ordered by their best-scoring row.
 - `eh.kmeans(mats, k)` clusters on all matrices side by side, each z-scored as a whole
@@ -108,7 +108,8 @@ fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": d
 - `shared=[["WT", "KO"]]` puts both on one colour scale; the ratio keeps its own.
 - Differential matrices are drawn with `RdBu_r`, symmetric around 0. Pass `center=` (a
   value, or a dict by column name in `eh.plot`) for a ratio you computed yourself or a
-  different midpoint, or `cmap=` to change the colours.
+  different midpoint, or `cmap=` to change the colours. With `center=` and only `vmin` or
+  `vmax`, the other bound mirrors it around the centre.
 - `agg="absmax"` keeps the strongest change, of either sign, when rows are averaged
   for display.
 

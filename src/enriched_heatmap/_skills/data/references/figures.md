@@ -6,7 +6,8 @@ missing from the data are drawn blank/NaN.
 ## eh.heatmap(mat, ax, rows, ...)
 
 `cmap` (default Reds, RdBu_r if `center`; matrices from `log2_ratio`/`subtract` get `center=0` automatically), `vmin`, `vmax`, `q=0.99` (quantile
-for vmax), `center` (TwoSlopeNorm, symmetric), `norm`, `na_color`,
+for vmax), `center` (TwoSlopeNorm, symmetric; with only one of `vmin`/`vmax` the other mirrors it
+around `center`), `norm`, `na_color`,
 `max_rows="auto"` (average down to ~1 row/pixel at 300 dpi; `None` = all
 rows), `agg` (`mean`, `max` for sparse narrow peaks, `absmax` for signed
 differences, `median`, `q90`), `anchor_labels` (`"TSS"` or `("TSS", "TES")`),

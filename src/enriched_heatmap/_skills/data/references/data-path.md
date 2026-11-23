@@ -70,7 +70,10 @@ the column count must equal `upstream/bin_size + downstream/bin_size` (plus
 `target_bins`, plus 1 with `centered=True`), and `subtract`/`log2_ratio` need identical geometry. Matrices
 compare by identity (`==` is `is`).
 
-Selection: `m.loc[ids]`, `m.iloc[pos]`, `m.reindex(ids)`, `m.dropna_regions()`.
+Selection: `m.loc[ids]`, `m.loc[a:b]` (labels, end inclusive), `m.iloc[pos]`,
+`m.reindex(ids)`, `m.dropna_regions()`. A boolean Series in `.loc` is aligned to
+`region_index` by label and raises if the labels differ (`KeyError`) or it holds NA; for a
+positional mask pass `.to_numpy()`. `Rows`/`arrange` need unique region ids.
 Transforms (all return new matrices): `log1p`, `log2p(pc)`, `zscore(axis=1)`,
 `clip_quantile(lo, hi)`, `smooth(sigma)` (NaN-aware, along bins),
 `log2_ratio(other, pseudocount=1)`, `subtract(other)` (other aligned by
