@@ -259,12 +259,49 @@ def test_pymisha_intervals_join_matches_default(misha_db):
 # ---------------------------------------------------------------------------
 # Regressions: input validation, layout metadata, dtype
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("col", ["start", "end"])
+@pytest.mark.parametrize("col", ["chrom", "start", "end"])
 def test_bins_rejects_missing_coordinates(col):
-    r = _regions().astype({"start": float, "end": float})
+    r = _regions().astype({"chrom": object, "start": float, "end": float})
     r.loc["b", col] = np.nan
     with pytest.raises(ValueError, match=f"missing values in '{col}'"):
         eh.bins(r)
+
+
+def test_snap_point_intervals_agree_across_strands():
+    regs = pd.DataFrame(
+        {"chrom": ["chr1", "chr1"], "start": [1000, 1000], "end": [1000, 1000], "strand": ["+", "-"]},
+        index=["plus", "minus"],
+    )
+    for anchor in ("center", "start", "end"):
+        b = eh.bins(regs, upstream=40, downstream=40, bin_size=20, anchor=anchor, snap=20)
+        plus_mid = b[(b.region == "plus") & (b.bin == 2)].iloc[0]
+        minus_mid = b[(b.region == "minus") & (b.bin == 2)].iloc[0]
+        assert plus_mid.start == minus_mid.start == 1000
+
+
+def test_matrices_rejects_out_of_range_bin_and_chrom_mismatch():
+    regs = pd.DataFrame(
+        {"chrom": ["chr2", "chr1"], "start": [1000, 1000], "end": [1000, 1000]},
+        index=["on_chr2", "on_chr1"],
+    )
+    b = eh.bins(regs, upstream=20, downstream=20, bin_size=20)
+    with pytest.raises(ValueError, match="bin"):
+        eh.matrix(pd.DataFrame({"region": ["on_chr2"], "bin": [-1], "v": [1.0]}), b, "v")
+    with pytest.raises(ValueError, match="bin"):
+        eh.matrix(pd.DataFrame({"region": ["on_chr2"], "bin": [2], "v": [1.0]}), b, "v")
+
+    swapped = b.sort_values("chrom").drop(columns=["region", "bin"]).reset_index(drop=True)
+    swapped["v"] = [1.0, 1.0, 2.0, 2.0]
+    with pytest.raises(ValueError, match="row for row"):
+        eh.matrix(swapped, b, "v")
+
+
+def test_example_values_allows_one_sided_boundary_windows():
+    peaks = eh.example_peaks(n=10)
+    for anchor, up, down in [("end", 0, 200), ("start", 200, 0)]:
+        b = eh.bins(peaks, upstream=up, downstream=down, bin_size=20, anchor=anchor)
+        v = eh.example_values(b, ["chec"], peaks=peaks)
+        assert len(v) == len(b)
 
 
 def test_bins_layout_survives_pandas_operations():

@@ -242,3 +242,41 @@ def test_matrices_compare_by_identity_without_raising():
     assert a == a
     assert (a == b) is False  # no "truth value of an array is ambiguous"
     assert len({a, b}) == 2   # and they stay hashable
+
+
+def test_loc_aligns_boolean_series_by_label_and_supports_reverse_slices():
+    mat = _make_mat(n_regions=4, n_bins=10)
+    # Reversed index: True only for peak_3
+    mask = pd.Series([True, False, False, False], index=mat.region_index[::-1])
+    assert list(mat.loc[mask].region_index) == ["peak_3"]
+
+    nullable = pd.Series([True, False, True, False], index=mat.region_index, dtype="boolean")
+    assert list(mat.loc[nullable].region_index) == ["peak_0", "peak_2"]
+
+    assert list(mat.loc[::-1].region_index) == list(mat.region_index[::-1])
+    assert list(mat.loc["peak_2":"peak_0":-1].region_index) == ["peak_2", "peak_1", "peak_0"]
+
+    with pytest.raises(ValueError, match="Boolean mask length"):
+        _ = mat.loc[np.array([], dtype=bool)]
+    with pytest.raises(ValueError, match="Boolean mask length"):
+        _ = mat.iloc[np.array([True, False])]
+    with pytest.raises(TypeError):
+        _ = mat.iloc[True]
+
+
+def test_flankless_matrices_with_different_column_counts_refuse_combine():
+    a = eh.NormalizedMatrix(np.ones((2, 9)), upstream=0, downstream=0, bin_size=10)
+    b = eh.NormalizedMatrix(np.ones((2, 5)), upstream=0, downstream=0, bin_size=10)
+    with pytest.raises(ValueError, match="n_bins: 9 vs 5"):
+        a.subtract(b)
+
+
+def test_zscore_with_all_nan_rows_does_not_warn():
+    import warnings
+
+    mat = _make_mat(n_regions=4, n_bins=10)
+    mat.values[1, :] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        out = mat.zscore(axis=1)
+    assert np.isnan(out.values[1]).all()

@@ -34,6 +34,12 @@ class Rows:
     gap: float = 0.0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.index, pd.Index):
+            object.__setattr__(self, "index", pd.Index(self.index))
+        if not self.index.is_unique:
+            raise ValueError("`index` must contain unique region identifiers.")
+        if self.gap < 0:
+            raise ValueError("`gap` must be non-negative.")
         if self.groups is None:
             return
         if len(self.groups) != len(self.index) or not self.groups.index.equals(self.index):
@@ -66,8 +72,10 @@ class Rows:
         if self.groups is None:
             return [(None, 0, len(self), 0.0, float(len(self)))]
         vals = self.groups.to_numpy()
+        if len(vals) == 0:
+            return []
         codes, _ = pd.factorize(vals)
-        starts = np.concatenate([[0], np.flatnonzero(np.diff(codes)) + 1]) if len(codes) else []
+        starts = np.concatenate([[0], np.flatnonzero(np.diff(codes)) + 1])
         stops = list(starts[1:]) + [len(vals)]
         out, y = [], 0.0
         for i0, i1 in zip(starts, stops, strict=True):
@@ -83,7 +91,9 @@ class Rows:
     @property
     def sizes(self) -> pd.Series:
         """Number of rows per group."""
-        return pd.Series({lbl: stop - start for lbl, start, stop, _, _ in self.spans()})
+        return pd.Series(
+            {lbl: stop - start for lbl, start, stop, _, _ in self.spans()}, dtype=np.int64
+        )
 
 
 def _scores_for(by, metric: OrderMetric) -> pd.Series | None:
@@ -148,8 +158,12 @@ def arrange(
         else:
             raise ValueError("Pass `by`, `groups` or `index` so the regions are known.")
     index = pd.Index(index)
+    if not index.is_unique:
+        raise ValueError("`index` must contain unique region identifiers.")
 
     if isinstance(by, pd.Index):
+        if not by.is_unique:
+            raise ValueError("`by` order Index must contain unique region identifiers.")
         missing = index.difference(by)
         if len(missing):
             raise KeyError(f"{len(missing)} regions are not in the `by` order, e.g. {list(missing[:3])}.")

@@ -173,13 +173,13 @@ def bins(
             "Region identifiers are not unique. Reset the index or pass id=<unique column>."
         )
 
-    chrom = regions[c_chrom].astype(str).to_numpy()
-    for c in (c_start, c_end):
+    for c in (c_chrom, c_start, c_end):
         if regions[c].isna().any():
             raise ValueError(
                 f"`regions` has {int(regions[c].isna().sum())} missing values in {c!r}; "
                 "drop those rows first."
             )
+    chrom = regions[c_chrom].astype(str).to_numpy()
     start = regions[c_start].to_numpy(dtype=np.int64)
     end = regions[c_end].to_numpy(dtype=np.int64)
     if np.any(end < start):
@@ -202,12 +202,13 @@ def bins(
     if body_bins is None:
         if centered:
             # The anchor *base*, not a boundary: the 5' base of a minus region is end - 1.
+            last = np.maximum(start, end - 1)
             if anchor == "center":
                 p = (start + end) // 2
             elif anchor == "start":
-                p = np.where(minus, end - 1, start)
+                p = np.where(minus, last, start)
             else:
-                p = np.where(minus, start, end - 1)
+                p = np.where(minus, start, last)
             cell = p - p % snap  # stored bin holding the anchor base
             a = cell - (bin_size - snap) // 2  # genomic start of the centred middle bin
         elif anchor == "center":
@@ -333,6 +334,11 @@ def matrices(
         b = values["bin"].to_numpy(dtype=np.int64)
         if np.any(r < 0):
             raise ValueError("`values` has `region` labels that are not in `bins`.")
+        if b.size and (b.min() < 0 or b.max() >= layout["n_bins"]):
+            raise ValueError(
+                f"`values['bin']` must be in 0..{layout['n_bins'] - 1}, "
+                f"got {int(b.min())}..{int(b.max())}."
+            )
     else:
         if "intervalID" in values.columns:
             pos = values["intervalID"].to_numpy(dtype=np.int64) - 1
@@ -347,6 +353,13 @@ def matrices(
                 and {"start", "end"} <= set(values.columns)
                 and np.array_equal(values["start"].to_numpy(), bins["start"].to_numpy())
                 and np.array_equal(values["end"].to_numpy(), bins["end"].to_numpy())
+                and (
+                    "chrom" not in values.columns
+                    or np.array_equal(
+                        values["chrom"].astype(str).str.removeprefix("chr").to_numpy(),
+                        bins["chrom"].astype(str).str.removeprefix("chr").to_numpy(),
+                    )
+                )
             )
             if not same:
                 raise ValueError(

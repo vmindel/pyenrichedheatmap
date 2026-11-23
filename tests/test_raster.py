@@ -61,6 +61,14 @@ def test_downsample_nan_safety():
     assert np.isclose(out_max[0, 0], 4.0)
     assert np.isnan(out_max[0, 1])
 
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        out_med = raster.downsample_rows(arr, target_rows=2, agg="median")
+        out_q90 = raster.downsample_rows(arr, target_rows=2, agg="q90")
+    assert np.isnan(out_med[0, 1]) and np.isnan(out_q90[0, 1])
+
 
 def test_downsample_1d_and_categorical():
     v = np.repeat(np.array([1.0, 5.0, 9.0, 2.0]), 25)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import Literal
 
@@ -119,7 +120,8 @@ def downsample_rows(
 
     if agg_key == "median":
         out = np.full((target_rows, n_cols), np.nan, dtype=np.float64)
-        with np.errstate(invalid="ignore", all="ignore"):
+        with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             for i in range(target_rows):
                 out[i] = np.nanmedian(arr_f[starts[i] : ends[i]], axis=0)
         return out.astype(arr.dtype, copy=False)
@@ -127,7 +129,8 @@ def downsample_rows(
     q = _parse_quantile_agg(agg_key)
     if q is not None:
         out = np.full((target_rows, n_cols), np.nan, dtype=np.float64)
-        with np.errstate(invalid="ignore", all="ignore"):
+        with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             for i in range(target_rows):
                 out[i] = np.nanquantile(arr_f[starts[i] : ends[i]], q, axis=0)
         return out.astype(arr.dtype, copy=False)

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+Review fixes. Behaviour changes are marked **(breaking)**.
+
+### Fixed
+
+- **(breaking)** `m.loc[bool_series]` aligns the mask to `region_index` by label
+  instead of by position, and raises on NA, a wrong length or a mask whose index does
+  not match. A `RangeIndex` mask on string region ids used to work positionally and
+  now raises `KeyError`; pass `.to_numpy()` for positional masks.
+- `m.loc[a:b]` slices through pandas, so it follows label semantics (inclusive end,
+  negative steps). `m.iloc` rejects a boolean scalar and a wrong-length mask.
+- **(breaking)** `Rows` and `arrange` raise on duplicate region identifiers, and
+  `Rows` on a negative `gap`. Empty grouped `Rows` no longer break `spans()` or `sizes`.
+- **(breaking)** `bins` raises on missing chromosome names (they became the string
+  "nan"). `matrices` raises when `values["bin"]` is outside the layout and when the
+  chromosomes of a positional `values` table differ from `bins`.
+- `bins(snap=)`: a zero-length region with `anchor="start"` on - or `"end"` on + no
+  longer anchors before its own start.
+- `enriched_score` on a centred matrix tapers the flank weights to just below the
+  middle bin instead of repeating 1.0 on three bins. This changes the order of
+  `score(..., "enriched_score")` for `snap` matrices only.
+- `subtract` and `log2_ratio` also compare the column count.
+- With `center=` and only one of `vmin` or `vmax`, the other bound mirrors it around
+  the centre instead of coming from the data quantile.
+- `palette` takes a Colormap object and raises on an empty list. `limits` takes a single
+  matrix and raises on none. `plot` raises on empty `mats` or malformed `shared`.
+  `hclust(k=0)` raises. An unnamed Series annotation no longer gets the label "0".
+- All-NaN rows no longer emit RuntimeWarnings from scoring, clustering, `zscore` or
+  `downsample_rows`.
+
 ## 0.4.0
 
 ### Fixed

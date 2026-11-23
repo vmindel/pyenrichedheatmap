@@ -77,6 +77,8 @@ def figure(
     grid : Grid
     """
     n = len(widths)
+    if n == 0:
+        raise ValueError("`widths` must not be empty.")
     prof = _per_column(profile, n, "profile")
     cbar = _per_column(colorbar, n, "colorbar")
     left, right, top, bottom = margins
@@ -212,6 +214,8 @@ def plot(
     """
     mats = _as_dict(mats)
     names = list(mats)
+    if not names:
+        raise ValueError("`mats` must not be empty.")
     if rows is None:
         rows = arrange(mats[names[0]])
     annotations = _as_annotations(annotations)
@@ -229,7 +233,17 @@ def plot(
     off = 1 if grouped else 0
 
     limits = {}
+    if isinstance(shared, str):
+        raise TypeError(
+            "`shared` must be a list of groups of column names, e.g. shared=[['WT', 'KO']]."
+        )
     for group in shared:
+        if isinstance(group, str) or not isinstance(group, Sequence):
+            raise TypeError(
+                "`shared` must be a list of groups of column names, e.g. shared=[['WT', 'KO']]."
+            )
+        if not group:
+            continue
         lim = draw.limits([mats[n] for n in group], q=q, center=_pick(center, group[0]))
         limits.update({n: lim for n in group})
 
