@@ -106,9 +106,12 @@ print(pm.gextract(["dense_track", "dense_sum"], intervals=probe, iterator=probe)
 0         0.05        0.1
 ```
 
-So for a fixed-bin track, make `bin_size` a multiple of the stored bin size and pass
-`snap=` (the stored bin size) to `eh.bins`. Anchors are rounded down to the track's
-grid, every heatmap bin then covers whole stored bins, and sums are exact:
+So for a fixed-bin track, make `bin_size` an odd multiple of the stored bin size
+(usually equal to it) and pass `snap=` (the stored bin size) to `eh.bins`. Every
+heatmap bin then covers whole stored bins, and sums are exact. The layout becomes
+centred: an extra middle bin holds the stored bin containing each region's anchor
+base, on either strand, so there are `upstream/bin_size + 1 + downstream/bin_size`
+bins and x = 0 is the middle of the anchor bin:
 
 ```python
 snapped = eh.bins(peaks, upstream=1000, downstream=1000, bin_size=50, snap=50, genome=genome)
@@ -119,8 +122,9 @@ print((snapped.start % 50 == 0).all())
 True
 ```
 
-The shift is under one stored bin, well below the resolution of the plot. Without
-`snap`, a stored bin straddling two heatmap bins is counted in both.
+Each anchor sits within half a stored bin of x = 0, with no bias to either side or
+between strands. Without `snap`, a stored bin straddling two heatmap bins is counted
+in both.
 
 Shifted views (`sshift=`/`eshift=`), PWM scores (`func="pwm"`) and distances to an
 interval set (`func="distance"`) work the same way: define the virtual track, extract

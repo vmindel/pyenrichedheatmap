@@ -124,10 +124,14 @@ def bins(
     strand : str or None
         Strand column; ``None`` (or a missing column) treats every region as plus.
     snap : int, optional
-        Round each anchor down to a multiple of this many bp (reference-point mode).
-        Pass the stored bin size of a fixed-bin track, with ``bin_size`` a multiple of
-        it, so every heatmap bin covers whole stored bins: misha does not weight
-        partially covered stored bins by overlap. Moves anchors by less than ``snap``.
+        Stored bin size of a fixed-bin track (reference-point mode). Heatmap bins are
+        laid on that grid so each covers whole stored bins (misha does not weight
+        partially covered stored bins by overlap), and the layout becomes *centred*:
+        an extra middle bin holds the stored bin that contains the anchor base, on
+        both strands. The matrix then has ``upstream/bin_size + 1 +
+        downstream/bin_size`` columns and x = 0 is the middle of the anchor bin.
+        ``bin_size`` must be an odd multiple of ``snap`` (e.g. ``snap=20`` with
+        ``bin_size`` 20 or 60) so the middle bin is centred on the grid.
 
     Returns
     -------
@@ -152,6 +156,16 @@ def bins(
         raise ValueError(f"`anchor` must be one of {_ANCHORS}, got {anchor!r}.")
     if body_bins is not None and body_bins <= 0:
         raise ValueError("`body_bins` must be positive.")
+    if snap:
+        snap = int(snap)
+        if snap < 0:
+            raise ValueError("`snap` must be positive.")
+        if body_bins is not None:
+            raise ValueError("`snap` only applies to reference-point bins (body_bins=None).")
+        if bin_size % snap or (bin_size // snap) % 2 == 0:
+            raise ValueError(
+                f"`bin_size` ({bin_size}) must be an odd multiple of `snap` ({snap}) so the "
+                f"anchor bin is centred on the stored grid, e.g. bin_size={snap} or {3 * snap}.")
 
     region_ids = pd.Index(regions[id] if id is not None else regions.index)
     if not region_ids.is_unique:
@@ -178,21 +192,30 @@ def bins(
 
     n_up, n_down = upstream // bin_size, downstream // bin_size
     n_body = body_bins or 0
-    n_bins = n_up + n_body + n_down
+    centered = bool(snap) and body_bins is None
+    n_bins = n_up + n_body + n_down + int(centered)
     n = len(regions)
 
     # Build every bin in genomic left-to-right order, then renumber minus rows 5'->3'.
     n_left = np.where(minus, n_down, n_up)
     k = np.arange(max(n_up, n_down))
     if body_bins is None:
-        if anchor == "center":
+        if centered:
+            # The anchor *base*, not a boundary: the 5' base of a minus region is end - 1.
+            if anchor == "center":
+                p = (start + end) // 2
+            elif anchor == "start":
+                p = np.where(minus, end - 1, start)
+            else:
+                p = np.where(minus, start, end - 1)
+            cell = p - p % snap  # stored bin holding the anchor base
+            a = cell - (bin_size - snap) // 2  # genomic start of the centred middle bin
+        elif anchor == "center":
             a = (start + end) // 2
         elif anchor == "start":
             a = np.where(minus, end, start)
         else:
             a = np.where(minus, start, end)
-        if snap:
-            a = a - a % int(snap)
         left_edge = a - n_left * bin_size
         g = np.arange(n_bins)
         b_start = left_edge[:, None] + g[None, :] * bin_size
@@ -248,6 +271,7 @@ def bins(
         "body_bins": int(n_body),
         "anchor": anchor if body_bins is None else None,
         "snap": int(snap) if snap else None,
+        "centered": centered,
         "n_bins": int(n_bins),
     }
     return out
@@ -353,6 +377,7 @@ def matrices(
             name=str(c),
             strand_oriented=layout["strand_oriented"],
             metadata={"anchor": layout["anchor"]},
+            centered=bool(layout.get("centered", False)),
         )
     return out
 

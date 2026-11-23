@@ -137,9 +137,11 @@ def _xaxis(mat: NormalizedMatrix, ax, labels, guides: bool, ticks: bool) -> None
     # Edge labels point inwards so neighbouring columns do not collide.
     tl = ax.get_xticklabels()
     if len(tl) > 1:
-        if pos[0] <= x0:
+        # Centred matrices put the flank ticks on the outer bin centres, half a bin inside.
+        slack = mat.bin_size / 2.0 if getattr(mat, "centered", False) else 0.0
+        if pos[0] <= x0 + slack:
             tl[0].set_horizontalalignment("left")
-        if pos[-1] >= x1:
+        if pos[-1] >= x1 - slack:
             tl[-1].set_horizontalalignment("right")
     if guides:
         for g in mat.guide_positions():
@@ -411,6 +413,12 @@ def annotation(
         raise ValueError(f"`kind` must be one of {_ANNOTATION_KINDS}, got {kind!r}.")
     df = data.to_frame() if isinstance(data, pd.Series) else data
     rows = _rows_for(df.index, rows)
+    if len(df) and len(rows) and not df.index.isin(rows.index).any():
+        raise ValueError(
+            "`data` shares no region identifiers with `rows` (data index starts "
+            f"{list(df.index[:3])}, rows start {list(rows.index[:3])}). Annotations are "
+            "matched by index, not position: pass a Series indexed by region, not "
+            "`.values` or a reset index.")
     df = df.reindex(rows.index)
     target = _target_rows(ax, len(rows), max_rows)
     ncol = df.shape[1]

@@ -41,10 +41,12 @@ shares x with its heatmap. Narrow columns (0.2-0.3) for annotation strips.
 ## eh.plot(mats, rows, annotations=None, ...)
 
 One column per matrix (dict keys are titles), group strip on the left when
-`rows` has groups, annotation strips on the right. Per-column options as a
+`rows` has groups, annotation strips on the right (`annotations=`: dict of
+name -> Series, a DataFrame or a Series, indexed by region; no shared
+identifiers with `rows` raises). Per-column options as a
 value or dict keyed by name: `cmap`, `center`, `vmax`. `shared=[["WT",
 "KO"]]` for one colour scale; `band`, `share_profile_y`, `colors`, `agg`,
-`width`, `height`, `pyplot=False` (plain Figure, not registered with pyplot, for
+`width`, `height`, `guides=False` (no dashed anchor lines), `pyplot=False` (plain Figure, not registered with pyplot, for
 loops), `annotation_colors` (default Set2, so strips differ from the
 groups), `annotation_legend` (default True: legends for categorical strips in
 the right margin). Returns `(fig, grid)`; edit axes afterwards as usual.

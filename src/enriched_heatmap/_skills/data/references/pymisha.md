@@ -29,9 +29,10 @@ mats = eh.matrices(vals, b)
 - Stored bins are **not weighted by overlap** (checked on pymisha 0.20): a
   heatmap bin covering 40 bp of one stored bin and 10 bp of the next gets
   their unweighted mean, and `sum` counts both in full. For fixed-bin tracks
-  use `bin_size` = a multiple of the stored bin size and
+  use `bin_size` = an odd multiple of (usually equal to) the stored bin size and
   `eh.bins(..., snap=<stored bin size>)` so heatmap bins cover whole stored
-  bins. Stored bin size: `pm.gtrack_info(track)["bin_size"]`.
+  bins; the matrix then has a centred anchor bin (one extra column, x = 0 at its
+  middle). Stored bin size: `pm.gtrack_info(track)["bin_size"]`.
 - pymisha expressions are Python: NA fill is
   `"np.where(np.isnan(t), 0, t)"`, not R's `ifelse(is.na(...))`.
 - Thresholds for peak calling come from `pm.gquantiles(expr,

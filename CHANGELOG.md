@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `plot(annotations=...)` raised "truth value of a DataFrame is ambiguous" on a
+  DataFrame. It now accepts a dict of name -> Series, a DataFrame (one strip per
+  column) or a single Series, and raises a clear TypeError on anything else.
+- **(breaking)** `annotation` (and so `plot`) raises when the data shares no region
+  identifiers with `rows`, e.g. a Series built from `.values` with a RangeIndex. It
+  used to draw a silent blank strip. Partial overlap still draws missing regions blank.
+- **(breaking)** `bins(snap=)` put the true anchor half a stored bin right of the
+  dashed line on average, and stranded regions one bin apart: the anchor's stored bin
+  landed right of 0 on + rows but left of 0 on - rows. `anchor="start"` on - and
+  `anchor="end"` on + also used the `end` boundary instead of the last base. With
+  `snap` the layout is now centred: `upstream/bin_size + 1 + downstream/bin_size`
+  bins, the middle one holding the stored bin with the anchor base on both strands,
+  x = 0 at its middle. `bin_size` must be an odd multiple of `snap`, and `snap` with
+  `body_bins` raises.
+
+### Added
+
+- `NormalizedMatrix(centered=True)`: reference-point geometry with a middle anchor
+  bin, kept through every transform, `subtract`/`log2_ratio` checks and `to_dict`.
+- `plot(guides=False)` turns off the dashed anchor lines in heatmaps and profiles.
+
 ## 0.3.0
 
 Fixes from a full review of the package. Behaviour changes are marked **(breaking)**.

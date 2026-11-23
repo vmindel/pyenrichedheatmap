@@ -301,3 +301,50 @@ def test_profile_bootstrap_band_is_exposed_and_reproducible():
     eh.profile(m, a2, band="boot", n_boot=50)
     np.testing.assert_array_equal(ax.collections[0].get_paths()[0].vertices,
                                   a2.collections[0].get_paths()[0].vertices)
+
+
+def test_plot_accepts_annotations_as_dataframe_or_series():
+    m = _mat()
+    labels = _labels(m)
+    df = pd.DataFrame({"class": labels, "score": np.arange(40.0)}, index=m.region_index)
+    fig, grid = eh.plot(m, annotations=df)
+    assert len(grid.heatmap) == 3  # heatmap + one strip per column
+    legends = [a for a in grid.heatmap[-1].artists if a.__class__.__name__ == "Legend"]
+    assert [lg.get_title().get_text() for lg in legends] == ["class"]
+    fig2, grid2 = eh.plot(m, annotations=labels.rename("class"))
+    assert len(grid2.heatmap) == 2
+    with pytest.raises(TypeError, match="annotations"):
+        eh.plot(m, annotations=[labels])
+
+
+def test_annotation_without_shared_identifiers_raises():
+    m = _mat()
+    rows = eh.arrange(m)
+    positional = pd.Series(_labels(m).values)  # RangeIndex: matched by position by mistake
+    with pytest.raises(ValueError, match="no region identifiers"):
+        eh.annotation(positional, plt.subplots()[1], rows)
+    with pytest.raises(ValueError, match="no region identifiers"):
+        eh.plot(m, rows=rows, annotations=pd.DataFrame({"cCRE": _labels(m).values}))
+    # partial overlap stays allowed: missing regions are blank
+    eh.annotation(_labels(m).iloc[:5], plt.subplots()[1], rows)
+
+
+def test_plot_guides_switch():
+    m = _mat()
+    def dashed(ax):
+        return [ln for ln in ax.get_lines() if ln.get_linestyle() == "--"]
+    fig, grid = eh.plot(m)
+    assert dashed(grid.heatmap[0]) and dashed(grid.profile[0])
+    fig, grid = eh.plot(m, guides=False)
+    assert not dashed(grid.heatmap[0]) and not dashed(grid.profile[0])
+
+
+def test_centred_matrix_edge_labels_point_inwards():
+    vals = np.ones((10, 2000 // 20 * 2 + 1))
+    m = eh.NormalizedMatrix(vals, upstream=2000, downstream=2000, bin_size=20, centered=True)
+    fig, ax = plt.subplots()
+    eh.heatmap(m, ax)
+    tl = ax.get_xticklabels()
+    assert tl[0].get_horizontalalignment() == "left"
+    assert tl[-1].get_horizontalalignment() == "right"
+    assert [t.get_text() for t in tl][1] == "0"
