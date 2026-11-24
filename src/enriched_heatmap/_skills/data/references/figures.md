@@ -47,9 +47,13 @@ name -> Series, a DataFrame or a Series, indexed by region; no shared
 identifiers with `rows` raises). Per-column options as a
 value or dict keyed by name: `cmap`, `center`, `vmax`. `shared=[["WT",
 "KO"]]` for one colour scale; `band`, `share_profile_y`, `colors`, `agg`,
-`width`, `height`, `guides=False` (no dashed anchor lines), `pyplot=False` (plain Figure, not registered with pyplot, for
+`width` (inches) and `widths` (relative factor per column, list in `mats` order
+or dict by name, default 1), `height`, `guides=False` (no dashed anchor lines), `pyplot=False` (plain Figure, not registered with pyplot, for
 loops), `annotation_colors` (default Set2, so strips differ from the
-groups), `annotation_legend` (default True: legends for categorical strips in
+groups; a dict keyed by strip name gives each categorical strip its own palette),
+`annotation_cmap`/`annotation_vmin`/`annotation_vmax`/`annotation_center` (value or
+dict keyed by strip name, for numeric strips; colour bar under each, with the
+strip name below it, unless `annotation_colorbar=False`), `annotation_legend` (default True: legends for categorical strips in
 the right margin). Returns `(fig, grid)`; edit axes afterwards as usual.
 
 ## Saving

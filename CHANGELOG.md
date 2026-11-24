@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- `plot(widths=)`: relative width of each heatmap column, multiplied by `width`
+  (a list in `mats` order or a dict keyed by column name; default all 1), e.g.
+  `widths=[1, 1, 0.5]`. Profiles and colour bars follow; annotation strips keep
+  `annotation_width`.
+- `plot` colour scales per annotation strip: `annotation_cmap`, `annotation_vmin`,
+  `annotation_vmax` and `annotation_center` take a value or a dict keyed by strip name
+  (like `cmap`/`vmax` for heatmap columns), and every group block of a strip uses them.
+  Numeric strips get a colour bar underneath (`annotation_colorbar=False` to drop it),
+  with the strip name under the bar instead of under the strip, and the figure grows
+  at the bottom to fit long names. Existing figures with numeric strips therefore gain
+  a colour bar and are taller.
+- `plot(annotation_colors=)` also takes a dict keyed by strip name, one palette per
+  categorical strip. A `{category: colour}` dict is still shared by every strip.
+
 Review fixes. Behaviour changes are marked **(breaking)**.
 
 ### Fixed

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import matplotlib.colors as mcolors
 import pandas as pd
 from matplotlib.figure import Figure
 
@@ -144,6 +145,69 @@ def _as_annotations(annotations) -> dict[str, pd.Series]:
     return dict(annotations)
 
 
+def _column_factors(widths, names: list[str]) -> list[float]:
+    """``plot(widths=)``: relative width factor per heatmap column, default 1."""
+    if widths is None:
+        return [1.0] * len(names)
+    if isinstance(widths, Mapping):
+        unknown = [k for k in widths if k not in names]
+        if unknown:
+            raise KeyError(f"`widths` has keys {unknown} that are not columns {names}.")
+        out = [float(widths.get(n, 1.0)) for n in names]
+    else:
+        if isinstance(widths, (str, bytes)) or not hasattr(widths, "__len__"):
+            raise TypeError("`widths` must be a list of factors, one per matrix, or a dict "
+                            "keyed by column name.")
+        out = [float(w) for w in widths]
+        if len(out) != len(names):
+            raise ValueError(f"`widths` has {len(out)} entries for {len(names)} matrices "
+                             f"({names}).")
+    if any(not w > 0 for w in out):
+        raise ValueError(f"`widths` factors must be positive, got {out}.")
+    return out
+
+
+def _annotation_palettes(colors, names) -> dict:
+    """``annotation_colors`` per strip: one palette for all, or a dict keyed by strip name.
+
+    A dict is per-strip when every key is a strip name and none of its values is a single
+    colour; otherwise it is one ``{category: colour}`` mapping shared by every strip.
+    """
+    if (isinstance(colors, Mapping) and colors and set(colors) <= set(names)
+            and not any(mcolors.is_color_like(v) for v in colors.values())):
+        return {n: colors.get(n, "Set2") for n in names}
+    return {n: colors for n in names}
+
+
+def _strip_colorbar(cb, norm, name: str) -> None:
+    """Colour bar under a narrow strip: only the ends (and centre), rotated, and the strip
+    name below them, so the name cannot run into the bar as it would under the strip."""
+    ticks = [norm.vmin, norm.vmax]
+    if isinstance(norm, mcolors.TwoSlopeNorm):
+        ticks = [norm.vmin, norm.vcenter, norm.vmax]
+    cb.set_ticks(ticks, labels=[f"{t:.3g}" for t in ticks])
+    cb.ax.tick_params(labelsize=6, length=2, labelrotation=90)
+    if name:
+        cb.set_label(name, fontsize=8, rotation=90, va="top", labelpad=2)
+
+
+def _fit_bottom(fig: Figure, axes: list, pad: float = 0.08) -> None:
+    """Make the figure taller at the bottom until ``axes`` (with their labels) clear the
+    edge by ``pad`` inches, so a plain ``savefig`` keeps long strip names."""
+    if not axes:
+        return
+    renderer = fig._get_renderer()
+    low = min(ax.get_tightbbox(renderer).y0 for ax in axes) / fig.dpi
+    if low >= pad:
+        return
+    d = pad - low
+    W, H = fig.get_size_inches()
+    for ax in fig.axes:
+        x0, y0, w, h = ax.get_position().bounds
+        ax.set_position((x0, (y0 * H + d) / (H + d), w, h * H / (H + d)))
+    fig.set_size_inches(W, H + d)
+
+
 def plot(
     mats: NormalizedMatrix | Sequence[NormalizedMatrix] | Mapping[str, NormalizedMatrix],
     rows: Rows | None = None,
@@ -158,12 +222,18 @@ def plot(
     share_profile_y: bool = False,
     colors: str | Mapping | Sequence = "tab10",
     width: float = 1.6,
+    widths: Sequence[float] | Mapping[str, float] | None = None,
     annotation_width: float = 0.22,
     height: float = 5.0,
     group_strip: bool = True,
     agg: str = "mean",
     annotation_colors: str | Mapping | Sequence = "Set2",
     annotation_legend: bool = True,
+    annotation_cmap: str | mcolors.Colormap | Mapping = "viridis",
+    annotation_vmin: float | Mapping[str, float] | None = None,
+    annotation_vmax: float | Mapping[str, float] | None = None,
+    annotation_center: float | Mapping[str, float] | None = None,
+    annotation_colorbar: bool = True,
     guides: bool = True,
     pyplot: bool = True,
 ) -> tuple[Figure, Grid]:
@@ -196,13 +266,32 @@ def plot(
         Same y-range for every profile.
     colors : colormap name, list or dict
         Group colours, used by the group strip and the profile lines.
+    width : float
+        Width of a heatmap column in inches.
+    widths : list of float or dict keyed by column name, optional
+        Relative width of each heatmap column, multiplied by ``width``: one factor per
+        matrix in ``mats`` order (default all 1), e.g. ``widths=[1, 1, 0.5]`` makes the
+        third column half as wide. A dict sets some columns and leaves the rest at 1.
+        Annotation strips keep ``annotation_width``.
     group_strip : bool
         With groups, add a labelled colour strip on the left.
     annotation_colors : colormap name, list or dict
-        Category colours of the annotation strips. Differs from ``colors`` by default
-        so a strip is not mistaken for the groups.
+        Category colours of the categorical annotation strips. Differs from ``colors``
+        by default so a strip is not mistaken for the groups. A dict keyed by strip name
+        (values: colormap name, list or ``{category: colour}`` dict) gives each strip
+        its own palette, e.g. ``{"cCRE": cre_colors, "strain": "Dark2"}``; any other dict
+        is one ``{category: colour}`` mapping shared by every strip.
     annotation_legend : bool
         Legend in the right margin for every categorical annotation strip.
+    annotation_cmap : colormap name or object, or dict keyed by strip name
+        Colour map of numeric annotation strips, e.g. ``{"GC%": "YlGnBu"}``; strips not
+        in a dict use ``"viridis"``.
+    annotation_vmin, annotation_vmax, annotation_center : value or dict keyed by strip name
+        Colour scale of numeric strips, as ``vmin``/``vmax``/``center`` of
+        :func:`heatmap`; an unset ``annotation_vmax`` comes from the ``q`` quantile.
+    annotation_colorbar : bool
+        A colour bar under every numeric annotation strip, with the strip name below
+        it. The figure grows at the bottom so long names are not cut off.
     guides : bool
         Dashed reference lines at the anchor (and body end) in heatmaps and profiles.
     pyplot : bool
@@ -221,14 +310,18 @@ def plot(
     annotations = _as_annotations(annotations)
     grouped = rows.groups is not None and group_strip
 
-    widths = ([annotation_width] if grouped else []) + [width] * len(names) + \
+    factors = _column_factors(widths, names)
+    col_widths = ([annotation_width] if grouped else []) + [width * f for f in factors] + \
         [annotation_width] * len(annotations)
     is_hm = ([False] if grouped else []) + [True] * len(names) + [False] * len(annotations)
     categorical = [
         n for n, sr in annotations.items() if draw._is_categorical(sr)
     ] if annotation_legend else []
-    margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.55)
-    fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=is_hm,
+    numeric_cbar = [annotation_colorbar and not draw._is_categorical(sr)
+                    for sr in annotations.values()]
+    has_cbar = is_hm[: len(is_hm) - len(annotations)] + numeric_cbar
+    margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.75 if any(numeric_cbar) else 0.55)
+    fig, grid = figure(col_widths, profile=[profile and h for h in is_hm], colorbar=has_cbar,
                        height=height, margins=margins, pyplot=pyplot)
     off = 1 if grouped else 0
 
@@ -269,12 +362,22 @@ def plot(
         draw.annotation(rows.groups.rename(""), grid.heatmap[0], rows, colors=colors, labels=False)
         draw.group_labels(grid.heatmap[0], rows)
 
-    items = []
+    items, strip_cbars = [], []
+    palettes = _annotation_palettes(annotation_colors, list(annotations))
     for k, (name, series) in enumerate(annotations.items()):
-        res = draw.annotation(series.rename(name), grid.heatmap[off + len(names) + k], rows,
-                              colors=annotation_colors)
+        col = off + len(names) + k
+        cax = grid.colorbar[col]
+        res = draw.annotation(series.rename(name), grid.heatmap[col], rows,
+                              colors=palettes[name], labels=cax is None,
+                              cmap=_pick(annotation_cmap, name, "viridis"),
+                              vmin=_pick(annotation_vmin, name), vmax=_pick(annotation_vmax, name),
+                              center=_pick(annotation_center, name), q=q)
         if isinstance(res, dict):
             items.append((name, res))
+        elif cax is not None:
+            _strip_colorbar(draw.colorbar(res, cax), res.norm, name)
+            strip_cbars.append(cax)
     if items and annotation_legend:
         draw.legends(grid.heatmap[-1], items, x=1.15)
+    _fit_bottom(fig, strip_cbars)
     return fig, grid

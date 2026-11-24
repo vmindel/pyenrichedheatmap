@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -387,3 +389,92 @@ def test_annotation_nullable_boolean_unnamed_series_and_palette_colormap():
     assert eh.palette(["a", "b"], matplotlib.colormaps["Set2"]) == eh.palette(["a", "b"], "Set2")
     with pytest.raises(ValueError, match="empty"):
         eh.palette(["a"], [])
+
+
+def test_plot_per_annotation_numeric_scales_and_colorbars():
+    m = _mat()
+    gc = pd.Series(np.linspace(30, 60, 40), index=m.region_index)
+    lfc = pd.Series(np.linspace(-2, 3, 40), index=m.region_index)
+    rows = eh.arrange(m, groups=_labels(m))
+    fig, grid = eh.plot(m, rows=rows, annotations={"class": _labels(m), "GC%": gc, "lfc": lfc},
+                        annotation_cmap={"GC%": "YlGnBu", "lfc": "RdBu_r"},
+                        annotation_vmin={"GC%": 35}, annotation_vmax={"GC%": 55},
+                        annotation_center={"lfc": 0})
+    ax_class, ax_gc, ax_lfc = grid.heatmap[-3:]
+    # every group block of a numeric strip is recoloured, not only the first
+    assert len(ax_gc.images) == 2
+    for im in ax_gc.images:
+        assert im.cmap.name.startswith("YlGnBu")
+        assert (im.norm.vmin, im.norm.vmax) == (35, 55)
+    for im in ax_lfc.images:
+        assert im.cmap.name.startswith("RdBu_r") and im.norm.vcenter == 0
+    # colour bars under numeric strips only
+    assert grid.colorbar[-3] is None
+    assert grid.colorbar[-2] is not None and grid.colorbar[-1] is not None
+    assert [t.get_text() for t in grid.colorbar[-2].get_xticklabels()] == ["35", "55"]
+    assert len(grid.colorbar[-1].get_xticks()) == 3  # vmin, centre, vmax
+    fig2, grid2 = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False)
+    assert grid2.colorbar[-1] is None
+    assert grid2.heatmap[-1].images[0].cmap.name.startswith("viridis")
+
+
+def test_plot_annotation_colors_per_strip_or_shared():
+    m = _mat()
+    a, b = _labels(m), _labels(m).map({"a": "x", "b": "y"})
+    fig, grid = eh.plot(m, annotations={"A": a, "B": b},
+                        annotation_colors={"A": {"a": "red", "b": "blue"}, "B": ["green", "black"]})
+    lut_a = grid.heatmap[-2].images[0].cmap
+    lut_b = grid.heatmap[-1].images[0].cmap
+    import matplotlib.colors as mc
+    assert mc.to_hex(lut_a(0)) == "#ff0000" and mc.to_hex(lut_b(0)) == "#008000"
+    # a {category: colour} dict is still shared across strips
+    fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"a": "red", "b": "blue"})
+    assert mc.to_hex(grid.heatmap[-1].images[0].cmap(1)) == "#0000ff"
+
+
+def test_plot_relative_column_widths():
+    a, b, c = _mat(name="a"), _mat(seed=1, name="b"), _mat(seed=2, name="c")
+    mats = {"a": a, "b": b, "c": c}
+    def w(ax):
+        return ax.get_position().width * ax.figure.get_figwidth()
+    fig, grid = eh.plot(mats, width=2.0)
+    assert [round(w(ax), 3) for ax in grid.heatmap] == [2.0, 2.0, 2.0]
+    fig, grid = eh.plot(mats, width=2.0, widths=[1, 1, 0.5])
+    assert [round(w(ax), 3) for ax in grid.heatmap] == [2.0, 2.0, 1.0]
+    # profile and colour bar follow their heatmap
+    assert round(w(grid.profile[2]), 3) == 1.0 and round(w(grid.colorbar[2]), 3) == 1.0
+    fig, grid = eh.plot(mats, width=2.0, widths={"b": 1.5}, annotations={"s": eh.score(a)})
+    assert [round(w(ax), 3) for ax in grid.heatmap[:3]] == [2.0, 3.0, 2.0]
+    assert round(w(grid.heatmap[3]), 3) == 0.22  # annotation strip unchanged
+    fig, grid = eh.plot(mats, widths=np.array([1, 2, 1]))
+    with pytest.raises(ValueError, match="3 matrices"):
+        eh.plot(mats, widths=[1, 0.5])
+    with pytest.raises(KeyError):
+        eh.plot(mats, widths={"zzz": 0.5})
+    with pytest.raises(ValueError, match="positive"):
+        eh.plot(mats, widths=[1, 0, 1])
+
+
+@pytest.mark.parametrize("pyplot", [True, False])
+def test_plot_numeric_strip_name_clears_its_colorbar(pyplot):
+    m = _mat()
+    gc = pd.Series(np.linspace(-1e4, 2e4, 40), index=m.region_index)
+    fig, grid = eh.plot(m, annotations={"GC content (%)": gc, "class": _labels(m)},
+                        pyplot=pyplot)
+    ax_gc, ax_class = grid.heatmap[-2:]
+    cax = grid.colorbar[-2]
+    # the name moves from under the strip to under the colour bar's tick labels
+    assert [t.get_text() for t in ax_gc.get_xticklabels()] == []
+    assert cax.get_xlabel() == "GC content (%)"
+    assert [t.get_text() for t in ax_class.get_xticklabels()] == ["class"]
+    # measure at the dpi it was drawn at: label positions are stored in pixels
+    fig.savefig(io.BytesIO(), format="png", dpi=fig.dpi)
+    r = fig._get_renderer()
+    name = cax.xaxis.label.get_window_extent(r)
+    assert name.y1 <= cax.get_window_extent(r).y0
+    assert all(name.y1 <= t.get_window_extent(r).y0 + 1e-6
+               for t in cax.get_xticklabels() if t.get_text())
+    assert name.y0 > 0  # inside the figure without bbox_inches="tight"
+    # no colour bar: the name stays under the strip
+    fig, grid = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False, pyplot=pyplot)
+    assert [t.get_text() for t in grid.heatmap[-1].get_xticklabels()] == ["GC%"]
