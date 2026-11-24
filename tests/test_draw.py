@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -451,3 +453,28 @@ def test_plot_relative_column_widths():
         eh.plot(mats, widths={"zzz": 0.5})
     with pytest.raises(ValueError, match="positive"):
         eh.plot(mats, widths=[1, 0, 1])
+
+
+@pytest.mark.parametrize("pyplot", [True, False])
+def test_plot_numeric_strip_name_clears_its_colorbar(pyplot):
+    m = _mat()
+    gc = pd.Series(np.linspace(-1e4, 2e4, 40), index=m.region_index)
+    fig, grid = eh.plot(m, annotations={"GC content (%)": gc, "class": _labels(m)},
+                        pyplot=pyplot)
+    ax_gc, ax_class = grid.heatmap[-2:]
+    cax = grid.colorbar[-2]
+    # the name moves from under the strip to under the colour bar's tick labels
+    assert [t.get_text() for t in ax_gc.get_xticklabels()] == []
+    assert cax.get_xlabel() == "GC content (%)"
+    assert [t.get_text() for t in ax_class.get_xticklabels()] == ["class"]
+    # measure at the dpi it was drawn at: label positions are stored in pixels
+    fig.savefig(io.BytesIO(), format="png", dpi=fig.dpi)
+    r = fig._get_renderer()
+    name = cax.xaxis.label.get_window_extent(r)
+    assert name.y1 <= cax.get_window_extent(r).y0
+    assert all(name.y1 <= t.get_window_extent(r).y0 + 1e-6
+               for t in cax.get_xticklabels() if t.get_text())
+    assert name.y0 > 0  # inside the figure without bbox_inches="tight"
+    # no colour bar: the name stays under the strip
+    fig, grid = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False, pyplot=pyplot)
+    assert [t.get_text() for t in grid.heatmap[-1].get_xticklabels()] == ["GC%"]

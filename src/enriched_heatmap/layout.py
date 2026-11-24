@@ -179,13 +179,33 @@ def _annotation_palettes(colors, names) -> dict:
     return {n: colors for n in names}
 
 
-def _scale_ticks(cb, norm) -> None:
-    """Colour bar under a narrow strip: only the ends (and centre), rotated."""
+def _strip_colorbar(cb, norm, name: str) -> None:
+    """Colour bar under a narrow strip: only the ends (and centre), rotated, and the strip
+    name below them, so the name cannot run into the bar as it would under the strip."""
     ticks = [norm.vmin, norm.vmax]
     if isinstance(norm, mcolors.TwoSlopeNorm):
         ticks = [norm.vmin, norm.vcenter, norm.vmax]
     cb.set_ticks(ticks, labels=[f"{t:.3g}" for t in ticks])
     cb.ax.tick_params(labelsize=6, length=2, labelrotation=90)
+    if name:
+        cb.set_label(name, fontsize=8, rotation=90, va="top", labelpad=2)
+
+
+def _fit_bottom(fig: Figure, axes: list, pad: float = 0.08) -> None:
+    """Make the figure taller at the bottom until ``axes`` (with their labels) clear the
+    edge by ``pad`` inches, so a plain ``savefig`` keeps long strip names."""
+    if not axes:
+        return
+    renderer = fig._get_renderer()
+    low = min(ax.get_tightbbox(renderer).y0 for ax in axes) / fig.dpi
+    if low >= pad:
+        return
+    d = pad - low
+    W, H = fig.get_size_inches()
+    for ax in fig.axes:
+        x0, y0, w, h = ax.get_position().bounds
+        ax.set_position((x0, (y0 * H + d) / (H + d), w, h * H / (H + d)))
+    fig.set_size_inches(W, H + d)
 
 
 def plot(
@@ -270,7 +290,8 @@ def plot(
         Colour scale of numeric strips, as ``vmin``/``vmax``/``center`` of
         :func:`heatmap`; an unset ``annotation_vmax`` comes from the ``q`` quantile.
     annotation_colorbar : bool
-        A colour bar under every numeric annotation strip.
+        A colour bar under every numeric annotation strip, with the strip name below
+        it. The figure grows at the bottom so long names are not cut off.
     guides : bool
         Dashed reference lines at the anchor (and body end) in heatmaps and profiles.
     pyplot : bool
@@ -341,19 +362,22 @@ def plot(
         draw.annotation(rows.groups.rename(""), grid.heatmap[0], rows, colors=colors, labels=False)
         draw.group_labels(grid.heatmap[0], rows)
 
-    items = []
+    items, strip_cbars = [], []
     palettes = _annotation_palettes(annotation_colors, list(annotations))
     for k, (name, series) in enumerate(annotations.items()):
         col = off + len(names) + k
+        cax = grid.colorbar[col]
         res = draw.annotation(series.rename(name), grid.heatmap[col], rows,
-                              colors=palettes[name],
+                              colors=palettes[name], labels=cax is None,
                               cmap=_pick(annotation_cmap, name, "viridis"),
                               vmin=_pick(annotation_vmin, name), vmax=_pick(annotation_vmax, name),
                               center=_pick(annotation_center, name), q=q)
         if isinstance(res, dict):
             items.append((name, res))
-        elif grid.colorbar[col] is not None:
-            _scale_ticks(draw.colorbar(res, grid.colorbar[col]), res.norm)
+        elif cax is not None:
+            _strip_colorbar(draw.colorbar(res, cax), res.norm, name)
+            strip_cbars.append(cax)
     if items and annotation_legend:
         draw.legends(grid.heatmap[-1], items, x=1.15)
+    _fit_bottom(fig, strip_cbars)
     return fig, grid

@@ -11,7 +11,10 @@
 - `plot` colour scales per annotation strip: `annotation_cmap`, `annotation_vmin`,
   `annotation_vmax` and `annotation_center` take a value or a dict keyed by strip name
   (like `cmap`/`vmax` for heatmap columns), and every group block of a strip uses them.
-  Numeric strips get a colour bar underneath (`annotation_colorbar=False` to drop it).
+  Numeric strips get a colour bar underneath (`annotation_colorbar=False` to drop it),
+  with the strip name under the bar instead of under the strip, and the figure grows
+  at the bottom to fit long names. Existing figures with numeric strips therefore gain
+  a colour bar and are taller.
 - `plot(annotation_colors=)` also takes a dict keyed by strip name, one palette per
   categorical strip. A `{category: colour}` dict is still shared by every strip.
 
