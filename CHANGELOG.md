@@ -4,6 +4,10 @@
 
 ### Added
 
+- `plot(widths=)`: relative width of each heatmap column, multiplied by `width`
+  (a list in `mats` order or a dict keyed by column name; default all 1), e.g.
+  `widths=[1, 1, 0.5]`. Profiles and colour bars follow; annotation strips keep
+  `annotation_width`.
 - `plot` colour scales per annotation strip: `annotation_cmap`, `annotation_vmin`,
   `annotation_vmax` and `annotation_center` take a value or a dict keyed by strip name
   (like `cmap`/`vmax` for heatmap columns), and every group block of a strip uses them.

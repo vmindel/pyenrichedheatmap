@@ -428,3 +428,26 @@ def test_plot_annotation_colors_per_strip_or_shared():
     # a {category: colour} dict is still shared across strips
     fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"a": "red", "b": "blue"})
     assert mc.to_hex(grid.heatmap[-1].images[0].cmap(1)) == "#0000ff"
+
+
+def test_plot_relative_column_widths():
+    a, b, c = _mat(name="a"), _mat(seed=1, name="b"), _mat(seed=2, name="c")
+    mats = {"a": a, "b": b, "c": c}
+    def w(ax):
+        return ax.get_position().width * ax.figure.get_figwidth()
+    fig, grid = eh.plot(mats, width=2.0)
+    assert [round(w(ax), 3) for ax in grid.heatmap] == [2.0, 2.0, 2.0]
+    fig, grid = eh.plot(mats, width=2.0, widths=[1, 1, 0.5])
+    assert [round(w(ax), 3) for ax in grid.heatmap] == [2.0, 2.0, 1.0]
+    # profile and colour bar follow their heatmap
+    assert round(w(grid.profile[2]), 3) == 1.0 and round(w(grid.colorbar[2]), 3) == 1.0
+    fig, grid = eh.plot(mats, width=2.0, widths={"b": 1.5}, annotations={"s": eh.score(a)})
+    assert [round(w(ax), 3) for ax in grid.heatmap[:3]] == [2.0, 3.0, 2.0]
+    assert round(w(grid.heatmap[3]), 3) == 0.22  # annotation strip unchanged
+    fig, grid = eh.plot(mats, widths=np.array([1, 2, 1]))
+    with pytest.raises(ValueError, match="3 matrices"):
+        eh.plot(mats, widths=[1, 0.5])
+    with pytest.raises(KeyError):
+        eh.plot(mats, widths={"zzz": 0.5})
+    with pytest.raises(ValueError, match="positive"):
+        eh.plot(mats, widths=[1, 0, 1])

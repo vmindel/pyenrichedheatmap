@@ -145,6 +145,28 @@ def _as_annotations(annotations) -> dict[str, pd.Series]:
     return dict(annotations)
 
 
+def _column_factors(widths, names: list[str]) -> list[float]:
+    """``plot(widths=)``: relative width factor per heatmap column, default 1."""
+    if widths is None:
+        return [1.0] * len(names)
+    if isinstance(widths, Mapping):
+        unknown = [k for k in widths if k not in names]
+        if unknown:
+            raise KeyError(f"`widths` has keys {unknown} that are not columns {names}.")
+        out = [float(widths.get(n, 1.0)) for n in names]
+    else:
+        if isinstance(widths, (str, bytes)) or not hasattr(widths, "__len__"):
+            raise TypeError("`widths` must be a list of factors, one per matrix, or a dict "
+                            "keyed by column name.")
+        out = [float(w) for w in widths]
+        if len(out) != len(names):
+            raise ValueError(f"`widths` has {len(out)} entries for {len(names)} matrices "
+                             f"({names}).")
+    if any(not w > 0 for w in out):
+        raise ValueError(f"`widths` factors must be positive, got {out}.")
+    return out
+
+
 def _annotation_palettes(colors, names) -> dict:
     """``annotation_colors`` per strip: one palette for all, or a dict keyed by strip name.
 
@@ -180,6 +202,7 @@ def plot(
     share_profile_y: bool = False,
     colors: str | Mapping | Sequence = "tab10",
     width: float = 1.6,
+    widths: Sequence[float] | Mapping[str, float] | None = None,
     annotation_width: float = 0.22,
     height: float = 5.0,
     group_strip: bool = True,
@@ -223,6 +246,13 @@ def plot(
         Same y-range for every profile.
     colors : colormap name, list or dict
         Group colours, used by the group strip and the profile lines.
+    width : float
+        Width of a heatmap column in inches.
+    widths : list of float or dict keyed by column name, optional
+        Relative width of each heatmap column, multiplied by ``width``: one factor per
+        matrix in ``mats`` order (default all 1), e.g. ``widths=[1, 1, 0.5]`` makes the
+        third column half as wide. A dict sets some columns and leaves the rest at 1.
+        Annotation strips keep ``annotation_width``.
     group_strip : bool
         With groups, add a labelled colour strip on the left.
     annotation_colors : colormap name, list or dict
@@ -259,7 +289,8 @@ def plot(
     annotations = _as_annotations(annotations)
     grouped = rows.groups is not None and group_strip
 
-    widths = ([annotation_width] if grouped else []) + [width] * len(names) + \
+    factors = _column_factors(widths, names)
+    col_widths = ([annotation_width] if grouped else []) + [width * f for f in factors] + \
         [annotation_width] * len(annotations)
     is_hm = ([False] if grouped else []) + [True] * len(names) + [False] * len(annotations)
     categorical = [
@@ -269,7 +300,7 @@ def plot(
                     for sr in annotations.values()]
     has_cbar = is_hm[: len(is_hm) - len(annotations)] + numeric_cbar
     margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.75 if any(numeric_cbar) else 0.55)
-    fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=has_cbar,
+    fig, grid = figure(col_widths, profile=[profile and h for h in is_hm], colorbar=has_cbar,
                        height=height, margins=margins, pyplot=pyplot)
     off = 1 if grouped else 0
 
