@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import matplotlib.colors as mcolors
 import pandas as pd
 from matplotlib.figure import Figure
 
@@ -144,6 +145,27 @@ def _as_annotations(annotations) -> dict[str, pd.Series]:
     return dict(annotations)
 
 
+def _annotation_palettes(colors, names) -> dict:
+    """``annotation_colors`` per strip: one palette for all, or a dict keyed by strip name.
+
+    A dict is per-strip when every key is a strip name and none of its values is a single
+    colour; otherwise it is one ``{category: colour}`` mapping shared by every strip.
+    """
+    if (isinstance(colors, Mapping) and colors and set(colors) <= set(names)
+            and not any(mcolors.is_color_like(v) for v in colors.values())):
+        return {n: colors.get(n, "Set2") for n in names}
+    return {n: colors for n in names}
+
+
+def _scale_ticks(cb, norm) -> None:
+    """Colour bar under a narrow strip: only the ends (and centre), rotated."""
+    ticks = [norm.vmin, norm.vmax]
+    if isinstance(norm, mcolors.TwoSlopeNorm):
+        ticks = [norm.vmin, norm.vcenter, norm.vmax]
+    cb.set_ticks(ticks, labels=[f"{t:.3g}" for t in ticks])
+    cb.ax.tick_params(labelsize=6, length=2, labelrotation=90)
+
+
 def plot(
     mats: NormalizedMatrix | Sequence[NormalizedMatrix] | Mapping[str, NormalizedMatrix],
     rows: Rows | None = None,
@@ -164,6 +186,11 @@ def plot(
     agg: str = "mean",
     annotation_colors: str | Mapping | Sequence = "Set2",
     annotation_legend: bool = True,
+    annotation_cmap: str | mcolors.Colormap | Mapping = "viridis",
+    annotation_vmin: float | Mapping[str, float] | None = None,
+    annotation_vmax: float | Mapping[str, float] | None = None,
+    annotation_center: float | Mapping[str, float] | None = None,
+    annotation_colorbar: bool = True,
     guides: bool = True,
     pyplot: bool = True,
 ) -> tuple[Figure, Grid]:
@@ -199,10 +226,21 @@ def plot(
     group_strip : bool
         With groups, add a labelled colour strip on the left.
     annotation_colors : colormap name, list or dict
-        Category colours of the annotation strips. Differs from ``colors`` by default
-        so a strip is not mistaken for the groups.
+        Category colours of the categorical annotation strips. Differs from ``colors``
+        by default so a strip is not mistaken for the groups. A dict keyed by strip name
+        (values: colormap name, list or ``{category: colour}`` dict) gives each strip
+        its own palette, e.g. ``{"cCRE": cre_colors, "strain": "Dark2"}``; any other dict
+        is one ``{category: colour}`` mapping shared by every strip.
     annotation_legend : bool
         Legend in the right margin for every categorical annotation strip.
+    annotation_cmap : colormap name or object, or dict keyed by strip name
+        Colour map of numeric annotation strips, e.g. ``{"GC%": "YlGnBu"}``; strips not
+        in a dict use ``"viridis"``.
+    annotation_vmin, annotation_vmax, annotation_center : value or dict keyed by strip name
+        Colour scale of numeric strips, as ``vmin``/``vmax``/``center`` of
+        :func:`heatmap`; an unset ``annotation_vmax`` comes from the ``q`` quantile.
+    annotation_colorbar : bool
+        A colour bar under every numeric annotation strip.
     guides : bool
         Dashed reference lines at the anchor (and body end) in heatmaps and profiles.
     pyplot : bool
@@ -227,8 +265,11 @@ def plot(
     categorical = [
         n for n, sr in annotations.items() if draw._is_categorical(sr)
     ] if annotation_legend else []
-    margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.55)
-    fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=is_hm,
+    numeric_cbar = [annotation_colorbar and not draw._is_categorical(sr)
+                    for sr in annotations.values()]
+    has_cbar = is_hm[: len(is_hm) - len(annotations)] + numeric_cbar
+    margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.75 if any(numeric_cbar) else 0.55)
+    fig, grid = figure(widths, profile=[profile and h for h in is_hm], colorbar=has_cbar,
                        height=height, margins=margins, pyplot=pyplot)
     off = 1 if grouped else 0
 
@@ -270,11 +311,18 @@ def plot(
         draw.group_labels(grid.heatmap[0], rows)
 
     items = []
+    palettes = _annotation_palettes(annotation_colors, list(annotations))
     for k, (name, series) in enumerate(annotations.items()):
-        res = draw.annotation(series.rename(name), grid.heatmap[off + len(names) + k], rows,
-                              colors=annotation_colors)
+        col = off + len(names) + k
+        res = draw.annotation(series.rename(name), grid.heatmap[col], rows,
+                              colors=palettes[name],
+                              cmap=_pick(annotation_cmap, name, "viridis"),
+                              vmin=_pick(annotation_vmin, name), vmax=_pick(annotation_vmax, name),
+                              center=_pick(annotation_center, name), q=q)
         if isinstance(res, dict):
             items.append((name, res))
+        elif grid.colorbar[col] is not None:
+            _scale_ticks(draw.colorbar(res, grid.colorbar[col]), res.norm)
     if items and annotation_legend:
         draw.legends(grid.heatmap[-1], items, x=1.15)
     return fig, grid

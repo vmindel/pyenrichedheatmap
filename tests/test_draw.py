@@ -387,3 +387,44 @@ def test_annotation_nullable_boolean_unnamed_series_and_palette_colormap():
     assert eh.palette(["a", "b"], matplotlib.colormaps["Set2"]) == eh.palette(["a", "b"], "Set2")
     with pytest.raises(ValueError, match="empty"):
         eh.palette(["a"], [])
+
+
+def test_plot_per_annotation_numeric_scales_and_colorbars():
+    m = _mat()
+    gc = pd.Series(np.linspace(30, 60, 40), index=m.region_index)
+    lfc = pd.Series(np.linspace(-2, 3, 40), index=m.region_index)
+    rows = eh.arrange(m, groups=_labels(m))
+    fig, grid = eh.plot(m, rows=rows, annotations={"class": _labels(m), "GC%": gc, "lfc": lfc},
+                        annotation_cmap={"GC%": "YlGnBu", "lfc": "RdBu_r"},
+                        annotation_vmin={"GC%": 35}, annotation_vmax={"GC%": 55},
+                        annotation_center={"lfc": 0})
+    ax_class, ax_gc, ax_lfc = grid.heatmap[-3:]
+    # every group block of a numeric strip is recoloured, not only the first
+    assert len(ax_gc.images) == 2
+    for im in ax_gc.images:
+        assert im.cmap.name.startswith("YlGnBu")
+        assert (im.norm.vmin, im.norm.vmax) == (35, 55)
+    for im in ax_lfc.images:
+        assert im.cmap.name.startswith("RdBu_r") and im.norm.vcenter == 0
+    # colour bars under numeric strips only
+    assert grid.colorbar[-3] is None
+    assert grid.colorbar[-2] is not None and grid.colorbar[-1] is not None
+    assert [t.get_text() for t in grid.colorbar[-2].get_xticklabels()] == ["35", "55"]
+    assert len(grid.colorbar[-1].get_xticks()) == 3  # vmin, centre, vmax
+    fig2, grid2 = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False)
+    assert grid2.colorbar[-1] is None
+    assert grid2.heatmap[-1].images[0].cmap.name.startswith("viridis")
+
+
+def test_plot_annotation_colors_per_strip_or_shared():
+    m = _mat()
+    a, b = _labels(m), _labels(m).map({"a": "x", "b": "y"})
+    fig, grid = eh.plot(m, annotations={"A": a, "B": b},
+                        annotation_colors={"A": {"a": "red", "b": "blue"}, "B": ["green", "black"]})
+    lut_a = grid.heatmap[-2].images[0].cmap
+    lut_b = grid.heatmap[-1].images[0].cmap
+    import matplotlib.colors as mc
+    assert mc.to_hex(lut_a(0)) == "#ff0000" and mc.to_hex(lut_b(0)) == "#008000"
+    # a {category: colour} dict is still shared across strips
+    fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"a": "red", "b": "blue"})
+    assert mc.to_hex(grid.heatmap[-1].images[0].cmap(1)) == "#0000ff"
