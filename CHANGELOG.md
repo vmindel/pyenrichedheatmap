@@ -22,6 +22,17 @@ Review fixes. Behaviour changes are marked **(breaking)**.
 
 ### Fixed
 
+- **(breaking)** `plot` raises on duplicate matrix names in a list of `mats`; the later
+  matrix used to replace the earlier one, dropping a column without warning.
+- **(breaking)** `bins(snap=)` takes a positive integer only. `snap=0` used to mean no
+  snapping and now raises (pass `snap=None`); a float such as `20.0` also raises.
+- `plot(widths=)` rejects NaN and infinite factors.
+- `plot(annotation_colors=)`: a colormap name that is also a colour name (`"pink"`,
+  `"gray"`) counts as a per-strip palette, and a misspelt colormap name raises instead
+  of turning the dict into a shared `{category: colour}` mapping.
+- `m.loc[bool_series]` with a duplicated index says so instead of reporting a length
+  mismatch.
+
 - **(breaking)** `m.loc[bool_series]` aligns the mask to `region_index` by label
   instead of by position, and raises on NA, a wrong length or a mask whose index does
   not match. A `RangeIndex` mask on string region ids used to work positionally and

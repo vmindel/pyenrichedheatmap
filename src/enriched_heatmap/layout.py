@@ -178,10 +178,13 @@ def _column_factors(widths, names: list[str]) -> list[float]:
 
 
 def _is_palette_spec(v) -> bool:
+    # A colormap name wins over a CSS colour of the same name ("pink", "gray"); any other
+    # string that is not a colour counts as a palette, so a misspelt colormap name reaches
+    # the colormap lookup and raises instead of turning the dict into a shared mapping.
     if isinstance(v, (Mapping, mcolors.Colormap)):
         return True
-    if isinstance(v, str):
-        return v in mpl.colormaps
+    if isinstance(v, str) and v in mpl.colormaps:
+        return True
     return not mcolors.is_color_like(v)
 
 
