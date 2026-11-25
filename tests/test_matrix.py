@@ -256,6 +256,8 @@ def test_loc_aligns_boolean_series_by_label_and_supports_reverse_slices():
     assert list(mat.loc[::-1].region_index) == list(mat.region_index[::-1])
     assert list(mat.loc["peak_2":"peak_0":-1].region_index) == ["peak_2", "peak_1", "peak_0"]
 
+    with pytest.raises(ValueError, match="unique identifiers"):
+        _ = mat.loc[pd.Series([True, False, True, False], index=["peak_0", "peak_0", "peak_1", "peak_2"])]
     with pytest.raises(ValueError, match="Boolean mask length"):
         _ = mat.loc[np.array([], dtype=bool)]
     with pytest.raises(ValueError, match="Boolean mask length"):

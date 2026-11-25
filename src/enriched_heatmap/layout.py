@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import matplotlib as mpl
 import matplotlib.colors as mcolors
 import pandas as pd
 from matplotlib.figure import Figure
@@ -122,7 +124,15 @@ def _as_dict(mats) -> dict[str, NormalizedMatrix]:
         return {mats.name or "signal": mats}
     if isinstance(mats, Mapping):
         return dict(mats)
-    return {m.name or f"m{i}": m for i, m in enumerate(mats)}
+    out: dict[str, NormalizedMatrix] = {}
+    for i, m in enumerate(mats):
+        name = m.name or f"m{i}"
+        if name in out:
+            raise ValueError(
+                f"Duplicate matrix name {name!r} in `mats`; pass a dict with distinct column names."
+            )
+        out[name] = m
+    return out
 
 
 def _pick(value, name: str, default=None):
@@ -162,19 +172,29 @@ def _column_factors(widths, names: list[str]) -> list[float]:
         if len(out) != len(names):
             raise ValueError(f"`widths` has {len(out)} entries for {len(names)} matrices "
                              f"({names}).")
-    if any(not w > 0 for w in out):
-        raise ValueError(f"`widths` factors must be positive, got {out}.")
+    if any(not (0 < w < math.inf) for w in out):
+        raise ValueError(f"`widths` factors must be positive and finite, got {out}.")
     return out
+
+
+def _is_palette_spec(v) -> bool:
+    if isinstance(v, (Mapping, mcolors.Colormap)):
+        return True
+    if isinstance(v, str):
+        return v in mpl.colormaps
+    return not mcolors.is_color_like(v)
 
 
 def _annotation_palettes(colors, names) -> dict:
     """``annotation_colors`` per strip: one palette for all, or a dict keyed by strip name.
 
-    A dict is per-strip when every key is a strip name and none of its values is a single
-    colour; otherwise it is one ``{category: colour}`` mapping shared by every strip.
+    A dict is per-strip when every key is a strip name and every value is a palette
+    specification (colormap name/object, list of colours or ``{category: colour}`` dict)
+    rather than a single colour; otherwise it is one ``{category: colour}`` mapping shared
+    by every strip.
     """
     if (isinstance(colors, Mapping) and colors and set(colors) <= set(names)
-            and not any(mcolors.is_color_like(v) for v in colors.values())):
+            and all(_is_palette_spec(v) for v in colors.values())):
         return {n: colors.get(n, "Set2") for n in names}
     return {n: colors for n in names}
 

@@ -156,10 +156,10 @@ def bins(
         raise ValueError(f"`anchor` must be one of {_ANCHORS}, got {anchor!r}.")
     if body_bins is not None and body_bins <= 0:
         raise ValueError("`body_bins` must be positive.")
-    if snap:
+    if snap is not None:
+        if isinstance(snap, bool) or not isinstance(snap, (int, np.integer)) or int(snap) <= 0:
+            raise ValueError("`snap` must be a positive integer.")
         snap = int(snap)
-        if snap < 0:
-            raise ValueError("`snap` must be positive.")
         if body_bins is not None:
             raise ValueError("`snap` only applies to reference-point bins (body_bins=None).")
         if bin_size % snap or (bin_size // snap) % 2 == 0:

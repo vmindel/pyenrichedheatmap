@@ -92,7 +92,9 @@ class _MatrixLocIndexer:
         if isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype):
             if key.isna().any():
                 raise ValueError("Boolean mask cannot contain NA / missing values.")
-            if not key.index.is_unique or len(key) != len(idx):
+            if not key.index.is_unique:
+                raise ValueError("Boolean Series index must contain unique identifiers.")
+            if len(key) != len(idx):
                 raise ValueError(
                     f"Boolean mask length ({len(key)}) does not match "
                     f"n_regions ({len(idx)})."

@@ -427,6 +427,10 @@ def test_plot_annotation_colors_per_strip_or_shared():
     lut_b = grid.heatmap[-1].images[0].cmap
     import matplotlib.colors as mc
     assert mc.to_hex(lut_a(0)) == "#ff0000" and mc.to_hex(lut_b(0)) == "#008000"
+    # a colormap name that is also a CSS colour name (e.g. "pink" or "gray") still works per-strip
+    fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"A": "pink"}, pyplot=False)
+    expected_pink = eh.palette(["a", "b"], "pink")
+    assert mc.to_hex(grid.heatmap[-1].images[0].cmap(0)) == mc.to_hex(expected_pink["a"])
     # a {category: colour} dict is still shared across strips
     fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"a": "red", "b": "blue"})
     assert mc.to_hex(grid.heatmap[-1].images[0].cmap(1)) == "#0000ff"
@@ -451,8 +455,11 @@ def test_plot_relative_column_widths():
         eh.plot(mats, widths=[1, 0.5])
     with pytest.raises(KeyError):
         eh.plot(mats, widths={"zzz": 0.5})
-    with pytest.raises(ValueError, match="positive"):
-        eh.plot(mats, widths=[1, 0, 1])
+    for bad_w in ([1, 0, 1], [1, np.nan, 1], [1, np.inf, 1]):
+        with pytest.raises(ValueError, match="positive"):
+            eh.plot(mats, widths=bad_w)
+    with pytest.raises(ValueError, match="Duplicate matrix name"):
+        eh.plot([_mat(name="dup"), _mat(name="dup")], pyplot=False)
 
 
 @pytest.mark.parametrize("pyplot", [True, False])

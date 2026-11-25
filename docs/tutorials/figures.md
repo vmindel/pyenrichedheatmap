@@ -112,6 +112,20 @@ fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": d
   `vmax`, the other bound mirrors it around the centre.
 - `agg="absmax"` keeps the strongest change, of either sign, when rows are averaged
   for display.
+- `widths=` scales individual heatmap columns relative to `width` (a list in `mats`
+  order or a dict keyed by column name, e.g. `widths=[1, 1, 0.5]` or
+  `widths={"log2(KO/WT)": 0.6}`); profiles and colour bars follow, while annotation
+  strips keep `annotation_width`.
+- `annotations=` accepts a dict of `name -> Series`, a `DataFrame` (one strip per
+  column) or a single `Series`, indexed by region.
+  - Categorical strips take `annotation_colors=` (a palette for all, or a dict keyed by
+    strip name so each strip gets its own palette) and get a legend in the right margin
+    (`annotation_legend=False` hides it).
+  - Numeric strips take `annotation_cmap=`, `annotation_vmin=`, `annotation_vmax=` and
+    `annotation_center=` (a value or a dict keyed by strip name) and get a colour bar
+    underneath with the strip name below it (`annotation_colorbar=False` hides the bar
+    and puts the name back under the strip).
+- `guides=False` turns off the dashed reference lines in heatmaps and profiles.
 
 ## Strand and scale-regions
 

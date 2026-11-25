@@ -138,6 +138,9 @@ def test_snap_end_boundary_on_stored_grid():
 
 def test_snap_validation_and_centred_matrix_geometry():
     r = _regions()
+    for bad_snap in (0, -20, 0.5, True):
+        with pytest.raises(ValueError, match="positive integer"):
+            eh.bins(r, upstream=100, downstream=100, bin_size=50, snap=bad_snap)
     with pytest.raises(ValueError, match="odd multiple"):
         eh.bins(r, upstream=120, downstream=120, bin_size=40, snap=20)
     with pytest.raises(ValueError, match="odd multiple"):
