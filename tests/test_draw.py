@@ -431,6 +431,10 @@ def test_plot_annotation_colors_per_strip_or_shared():
     fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"A": "pink"}, pyplot=False)
     expected_pink = eh.palette(["a", "b"], "pink")
     assert mc.to_hex(grid.heatmap[-1].images[0].cmap(0)) == mc.to_hex(expected_pink["a"])
+    # a misspelt colormap name raises instead of silently making the dict a shared mapping
+    with pytest.raises(KeyError, match="Set2_typo"):
+        eh.plot(m, annotations={"A": a, "B": b},
+                annotation_colors={"A": "Set2_typo", "B": "Dark2"}, pyplot=False)
     # a {category: colour} dict is still shared across strips
     fig, grid = eh.plot(m, annotations={"A": a}, annotation_colors={"a": "red", "b": "blue"})
     assert mc.to_hex(grid.heatmap[-1].images[0].cmap(1)) == "#0000ff"
