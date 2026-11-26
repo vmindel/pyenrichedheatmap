@@ -289,3 +289,33 @@ def test_hclust_rejects_non_positive_k_and_all_nan_rows_do_not_warn():
         _ = eh.score(nan_mat, "median")
         _ = eh.score(nan_mat, "center_mean")
         _ = eh.kmeans(nan_mat, k=2)
+
+
+def test_zero_overlap_clustering_and_arrange_gap_groups_guards():
+    import types
+    import warnings
+
+    mat1, mat2 = _make_clustered_matrices()
+    disjoint = eh.NormalizedMatrix(
+        mat2.values, upstream=1000, downstream=1000, bin_size=50, name="unindexed"
+    )
+    with pytest.raises(ValueError, match="shares no region identifiers"):
+        eh.kmeans([mat1, disjoint], k=3)
+    with pytest.raises(ValueError, match="shares no region identifiers"):
+        eh.hclust(types.MappingProxyType({"m1": mat1, "m2": disjoint}), k=3)
+
+    for bad_gap in (np.nan, np.inf, -np.inf, -0.1, True, False):
+        with pytest.raises(ValueError, match="non-negative"):
+            eh.arrange(mat1, gap=bad_gap)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="non-negative"):
+            eh.Rows(mat1.region_index, gap=bad_gap)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="Series"):
+        eh.arrange(mat1, groups=["a"] * mat1.n_regions)  # type: ignore[arg-type]
+
+    empty = mat1.iloc[:0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert len(eh.kmeans(empty, k=3)) == 0
+        assert len(eh.hclust(empty, k=3).order) == 0
+

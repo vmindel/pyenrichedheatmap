@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap._matrix import NormalizedMatrix
+from enriched_heatmap._matrix import NormalizedMatrix, _index_isna, _safe_get_indexer
 
 OrderMetric = (
     Literal["mean", "median", "max", "sum", "center_mean", "center_max", "enriched_score"]
     | Callable[[NormalizedMatrix], np.ndarray]
 )
+MatrixLike = NormalizedMatrix | pd.DataFrame | np.ndarray
+ScaleMode = Literal["zscore", "row_zscore", "none"]
+_VALID_SCALES: tuple[str, ...] = ("zscore", "row_zscore", "none")
+
+
+def _has_any_overlap(source: pd.Index, target: pd.Index) -> bool:
+    if source is target:
+        return len(source) > 0
+    indexer = _safe_get_indexer(source, target)
+    tgt_na = _index_isna(target)
+    both_all_na = bool(tgt_na.all()) and bool(_index_isna(source).all())
+    return bool(np.any(indexer >= 0)) if both_all_na else bool(np.any((indexer >= 0) & ~tgt_na))
 
 
 _HCLUST_WARN_ROWS = 20_000
@@ -175,26 +187,66 @@ def _scores(
 
 
 def _extract_feature_block(
-    item: NormalizedMatrix | pd.DataFrame | np.ndarray,
+    item: MatrixLike,
     region_index: pd.Index | None = None,
-    scale: Literal["zscore", "row_zscore", "none"] = "zscore",
+    scale: ScaleMode = "zscore",
 ) -> tuple[np.ndarray, pd.Index]:
     """Convert a matrix/DataFrame/ndarray into a NaN-imputed, scaled 2D feature block."""
+    if scale not in _VALID_SCALES:
+        raise ValueError(f"`scale` must be 'zscore', 'row_zscore', or 'none', got {scale!r}.")
+
+    idx: pd.Index
     if isinstance(item, NormalizedMatrix):
+        if (
+            region_index is not None
+            and len(region_index) > 0
+            and len(item.region_index) > 0
+            and not _has_any_overlap(item.region_index, region_index)
+        ):
+            raise ValueError(
+                "Secondary matrix shares no region identifiers with the primary matrix "
+                f"(secondary starts {list(item.region_index[:3])}, "
+                f"primary starts {list(region_index[:3])})."
+            )
         aligned = item.reindex(region_index) if region_index is not None else item
         vals = aligned.values.astype(np.float64, copy=True)
         idx = aligned.region_index
     elif isinstance(item, pd.DataFrame):
-        aligned_df = item.reindex(region_index) if region_index is not None else item
+        if not item.index.is_unique:
+            raise ValueError("DataFrame index must contain unique region identifiers.")
+        if region_index is not None:
+            if (
+                len(region_index) > 0
+                and len(item.index) > 0
+                and not _has_any_overlap(item.index, region_index)
+            ):
+                raise ValueError(
+                    "Secondary DataFrame shares no region identifiers with the primary matrix "
+                    f"(secondary starts {list(item.index[:3])}, "
+                    f"primary starts {list(region_index[:3])})."
+                )
+            aligned_df = item.reindex(region_index)
+        else:
+            aligned_df = item
         vals = aligned_df.to_numpy(dtype=np.float64, copy=True)
         idx = aligned_df.index
     else:
         arr = np.asarray(item, dtype=np.float64)
+        if arr.ndim not in (1, 2):
+            raise ValueError(f"Feature array must be 1D or 2D, got shape {arr.shape}.")
         vals = arr[:, None].copy() if arr.ndim == 1 else arr.copy()
-        idx = region_index if region_index is not None else pd.RangeIndex(vals.shape[0])
+        if region_index is not None:
+            if vals.shape[0] != len(region_index):
+                raise ValueError(
+                    f"Secondary array row count ({vals.shape[0]}) does not match "
+                    f"primary n_regions ({len(region_index)})."
+                )
+            idx = region_index
+        else:
+            idx = pd.RangeIndex(vals.shape[0])
 
     # Impute NaNs column-wise with median (fallback 0.0)
-    if np.any(~np.isfinite(vals)):
+    if vals.size > 0 and np.any(~np.isfinite(vals)):
         with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             col_med = np.nanmedian(vals, axis=0)
@@ -202,29 +254,30 @@ def _extract_feature_block(
         bad_r, bad_c = np.where(~np.isfinite(vals))
         vals[bad_r, bad_c] = col_med[bad_c]
 
-    if scale == "zscore":
-        mu = vals.mean()
-        sd = vals.std()
+    if vals.size > 0 and scale == "zscore":
+        mu = float(vals.mean())
+        sd = float(vals.std())
         if sd > 0:
             vals = (vals - mu) / sd
-    elif scale == "row_zscore":
-        mu = vals.mean(axis=1, keepdims=True)
-        sd = vals.std(axis=1, keepdims=True)
-        vals = np.where(sd > 0, (vals - mu) / sd, 0.0)
-    elif scale != "none":
-        raise ValueError(f"`scale` must be 'zscore', 'row_zscore', or 'none', got {scale!r}.")
+    elif vals.size > 0 and scale == "row_zscore":
+        row_mu = vals.mean(axis=1, keepdims=True)
+        row_sd = vals.std(axis=1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            vals = np.where(row_sd > 0, (vals - row_mu) / row_sd, 0.0)
 
     return vals, idx
 
 
 def _build_joint_features(
-    matrices: NormalizedMatrix | pd.DataFrame | np.ndarray | Sequence[Any],
-    scale: Literal["zscore", "row_zscore", "none"] = "zscore",
+    matrices: MatrixLike | Sequence[MatrixLike] | Mapping[Any, MatrixLike],
+    scale: ScaleMode = "zscore",
 ) -> tuple[np.ndarray, pd.Index, np.ndarray]:
     """Stack one or more matrices horizontally into a joint clustering feature matrix."""
+    if scale not in _VALID_SCALES:
+        raise ValueError(f"`scale` must be 'zscore', 'row_zscore', or 'none', got {scale!r}.")
     if isinstance(matrices, (NormalizedMatrix, pd.DataFrame, np.ndarray)):
-        items = [matrices]
-    elif isinstance(matrices, dict):
+        items: list[MatrixLike] = [matrices]
+    elif isinstance(matrices, Mapping):
         items = list(matrices.values())
     else:
         items = list(matrices)
@@ -233,23 +286,31 @@ def _build_joint_features(
 
     first_vals, base_index = _extract_feature_block(items[0], region_index=None, scale=scale)
     # Also keep unscaled primary mean per row for deterministic cluster ordering
-    with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        if isinstance(items[0], NormalizedMatrix):
-            primary_raw = np.nanmean(items[0].values, axis=1)
-        elif isinstance(items[0], pd.DataFrame):
-            primary_raw = np.nanmean(items[0].to_numpy(dtype=np.float64), axis=1)
-        else:
-            arr0 = np.asarray(items[0], dtype=np.float64)
-            primary_raw = np.nanmean(arr0 if arr0.ndim == 2 else arr0[:, None], axis=1)
+    if len(base_index) == 0:
+        primary_raw = np.empty(0, dtype=np.float64)
+    else:
+        with np.errstate(invalid="ignore", all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            if isinstance(items[0], NormalizedMatrix):
+                raw0 = items[0].values
+            elif isinstance(items[0], pd.DataFrame):
+                raw0 = items[0].to_numpy(dtype=np.float64)
+            else:
+                arr0 = np.asarray(items[0], dtype=np.float64)
+                raw0 = arr0 if arr0.ndim == 2 else arr0[:, None]
+            primary_raw = (
+                np.nanmean(raw0, axis=1)
+                if raw0.shape[1] > 0
+                else np.full(raw0.shape[0], np.nan, dtype=np.float64)
+            )
 
     blocks = [first_vals]
     for item in items[1:]:
         blk, _ = _extract_feature_block(item, region_index=base_index, scale=scale)
-        # Weight each matrix equally by 1 / sqrt(n_features) so wide matrices don't dominate
         blocks.append(blk)
 
     if len(blocks) > 1:
+        # Weight each matrix equally by 1 / sqrt(n_features) so wide matrices don't dominate
         blocks = [b / np.sqrt(max(b.shape[1], 1)) for b in blocks]
 
     X = np.hstack(blocks)
@@ -311,10 +372,10 @@ def _numpy_kmeans(
 
 
 def kmeans(
-    matrices: NormalizedMatrix | pd.DataFrame | np.ndarray | Sequence[Any],
+    matrices: MatrixLike | Sequence[MatrixLike] | Mapping[Any, MatrixLike],
     k: int,
     random_state: int = 42,
-    scale: Literal["zscore", "row_zscore", "none"] = "zscore",
+    scale: ScaleMode = "zscore",
     n_init: int = 10,
     order_clusters: Literal["descending", "ascending", "none"] = "descending",
     label_prefix: str = "C",
@@ -344,8 +405,8 @@ def kmeans(
     pandas.Series
         Ordered categorical, indexed by region. Pass it as ``groups=`` to :func:`arrange`.
     """
-    if k < 1:
-        raise ValueError("`k` must be >= 1.")
+    if isinstance(k, (bool, np.bool_)) or not isinstance(k, (int, np.integer)) or int(k) < 1:
+        raise ValueError("`k` must be an integer >= 1.")
 
     X, region_index, primary_raw = _build_joint_features(matrices, scale=scale)
     n_regions = X.shape[0]
@@ -385,11 +446,11 @@ def kmeans(
 
 
 def hclust(
-    matrices: NormalizedMatrix | pd.DataFrame | np.ndarray | Sequence[Any],
+    matrices: MatrixLike | Sequence[MatrixLike] | Mapping[Any, MatrixLike],
     k: int | None = None,
     method: str = "ward",
     metric: str = "euclidean",
-    scale: Literal["zscore", "row_zscore", "none"] = "zscore",
+    scale: ScaleMode = "zscore",
     optimal_ordering: bool = False,
     label_prefix: str = "C",
 ) -> HClust:
@@ -407,8 +468,10 @@ def hclust(
         (``order, clusters = hclust(...)``) or pass it as ``eh.arrange(hc)``, which
         uses the leaf order and, when present, the clusters as groups.
     """
-    if k is not None and k < 1:
-        raise ValueError("`k` must be >= 1.")
+    if k is not None and (
+        isinstance(k, (bool, np.bool_)) or not isinstance(k, (int, np.integer)) or int(k) < 1
+    ):
+        raise ValueError("`k` must be an integer >= 1.")
     try:
         from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
     except ImportError as exc:

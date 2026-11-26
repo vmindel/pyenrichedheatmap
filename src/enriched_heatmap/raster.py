@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Callable
 from typing import Literal
@@ -15,6 +16,14 @@ DownsampleAgg = (
 )
 
 
+def _validate_target_rows(target_rows: int) -> int:
+    if isinstance(target_rows, (bool, np.bool_)) or not isinstance(
+        target_rows, (int, np.integer)
+    ):
+        raise ValueError(f"`target_rows` must be an integer, got {target_rows!r}.")
+    return int(target_rows)
+
+
 def _bucket_edges(n_rows: int, target_rows: int) -> np.ndarray:
     """Return strictly increasing integer bucket boundaries of length ``target_rows + 1``."""
     edges = np.linspace(0, n_rows, target_rows + 1, dtype=np.int64)
@@ -22,16 +31,24 @@ def _bucket_edges(n_rows: int, target_rows: int) -> np.ndarray:
 
 
 def _parse_quantile_agg(agg: str) -> float | None:
-    """Parse ``"q90"`` -> ``0.90``, ``"q95"`` -> ``0.95``, etc."""
-    if len(agg) >= 2 and agg[0] in ("q", "Q"):
+    """Parse ``"q1"`` -> ``0.01``, ``"q90"`` -> ``0.90``, ``"q0.5"`` -> ``0.50``, etc."""
+    if len(agg) < 2 or agg[0] not in ("q", "Q"):
+        return None
+    body = agg[1:]
+    if body != body.strip() or body.startswith("+"):
+        return None
+    if "." in body:
         try:
-            q = float(agg[1:])
+            q = float(body)
         except ValueError:
             return None
-        if 0.0 <= q <= 1.0:
+        if math.isfinite(q) and 0.0 <= q <= 1.0:
             return q
-        if 1.0 < q <= 100.0:
-            return q / 100.0
+        return None
+    if body.isascii() and body.isdigit():
+        pct = int(body)
+        if 0 <= pct <= 100:
+            return pct / 100.0
     return None
 
 
@@ -61,9 +78,22 @@ def downsample_rows(
         - ``"q90"``, ``"q95"``, ``"qXX"``: NaN-safe bucket quantile (e.g., 90th percentile).
         - Callable ``fn(chunk_2d) -> row_1d`` for custom aggregation.
     """
+    target_rows = _validate_target_rows(target_rows)
     arr = np.asarray(data)
     if arr.ndim != 2:
         raise ValueError(f"`data` must be 2D, got shape {arr.shape}.")
+
+    q_parsed: float | None = None
+    agg_key = ""
+    if not callable(agg):
+        agg_key = str(agg).lower()
+        if agg_key not in ("mean", "max", "min", "absmax", "median"):
+            q_parsed = _parse_quantile_agg(agg_key)
+            if q_parsed is None:
+                raise ValueError(
+                    f"Unsupported downsample_agg {agg!r}. Choose from "
+                    "'mean', 'max', 'min', 'absmax', 'median', 'qXX' (e.g. 'q90'), or a callable."
+                )
 
     n_rows, n_cols = arr.shape
     if target_rows <= 0 or n_rows <= target_rows or n_rows == 0:
@@ -79,7 +109,6 @@ def downsample_rows(
             out[i] = agg(arr[starts[i] : ends[i]])
         return out.astype(arr.dtype, copy=False)
 
-    agg_key = str(agg).lower()
     arr_f = arr.astype(np.float64, copy=False)
 
     if agg_key == "mean":
@@ -147,6 +176,7 @@ def downsample_1d_rows(
     agg: DownsampleAgg = "mean",
 ) -> np.ndarray:
     """Downsample a 1D row annotation vector into ``target_rows`` buckets."""
+    target_rows = _validate_target_rows(target_rows)
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim != 1:
         raise ValueError(f"`values` must be 1D, got shape {arr.shape}.")
@@ -160,6 +190,7 @@ def downsample_categorical_rows(
     target_rows: int,
 ) -> np.ndarray:
     """Downsample 1D integer category codes (``-1`` = missing) by bucket mode."""
+    target_rows = _validate_target_rows(target_rows)
     arr = np.asarray(codes, dtype=np.int64)
     if arr.ndim != 1:
         raise ValueError(f"`codes` must be 1D, got shape {arr.shape}.")

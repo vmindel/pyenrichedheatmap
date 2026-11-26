@@ -85,7 +85,10 @@ eh.legend(grid.profile[1], eh.palette(rows.labels, "Set2"), bbox_to_anchor=(1.05
 
 - Profile colours follow `rows.labels`; `eh.palette(labels, colors)` gives the same
   mapping for a legend.
-- `kind="bar"` draws numeric annotations as bars; the default is a colour strip.
+- `kind="bar"` draws numeric annotations as bars; the default (`kind="auto"`) picks a
+  discrete colour strip for categorical/string/boolean values or a continuous strip for
+  numbers, and `kind="categorical"` or `kind="numeric"` overrides that (e.g. to draw
+  integer cluster codes as discrete categories).
 - Any axes in `grid` is a normal matplotlib axes; add text, lines or limits as usual.
 
 ## Shared scales and differential matrices
@@ -105,7 +108,9 @@ fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": d
 
 ![Differential](../images/figures-differential.png)
 
-- `shared=[["WT", "KO"]]` puts both on one colour scale; the ratio keeps its own.
+- `shared=[["WT", "KO"]]` puts both on one colour scale aligned to `rows`; the ratio
+  keeps its own. Explicit `vmin=`, `vmax=` and `center=` (a value or dict keyed by
+  column name) apply to individual columns or consistently across a `shared` group.
 - Differential matrices are drawn with `RdBu_r`, symmetric around 0. Pass `center=` (a
   value, or a dict by column name in `eh.plot`) for a ratio you computed yourself or a
   different midpoint, or `cmap=` to change the colours. With `center=` and only `vmin` or
@@ -118,9 +123,9 @@ fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": d
   strips keep `annotation_width`.
 - `annotations=` accepts a dict of `name -> Series`, a `DataFrame` (one strip per
   column) or a single `Series`, indexed by region.
-  - Categorical strips take `annotation_colors=` (a palette for all, or a dict keyed by
-    strip name so each strip gets its own palette) and get a legend in the right margin
-    (`annotation_legend=False` hides it).
+  - Categorical strips take `annotation_colors=` (a palette shared and automatically
+    offset across strips, or a dict keyed by strip name so each strip gets its own
+    palette) and get a legend in the right margin (`annotation_legend=False` hides it).
   - Numeric strips take `annotation_cmap=`, `annotation_vmin=`, `annotation_vmax=` and
     `annotation_center=` (a value or a dict keyed by strip name) and get a colour bar
     underneath with the strip name below it (`annotation_colorbar=False` hides the bar

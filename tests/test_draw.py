@@ -480,12 +480,53 @@ def test_plot_numeric_strip_name_clears_its_colorbar(pyplot):
     assert [t.get_text() for t in ax_class.get_xticklabels()] == ["class"]
     # measure at the dpi it was drawn at: label positions are stored in pixels
     fig.savefig(io.BytesIO(), format="png", dpi=fig.dpi)
-    r = fig._get_renderer()
-    name = cax.xaxis.label.get_window_extent(r)
-    assert name.y1 <= cax.get_window_extent(r).y0
-    assert all(name.y1 <= t.get_window_extent(r).y0 + 1e-6
+    name = cax.xaxis.label.get_window_extent()
+    assert name.y1 <= cax.get_window_extent().y0
+    assert all(name.y1 <= t.get_window_extent().y0 + 1e-6
                for t in cax.get_xticklabels() if t.get_text())
     assert name.y0 > 0  # inside the figure without bbox_inches="tight"
     # no colour bar: the name stays under the strip
     fig, grid = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False, pyplot=pyplot)
     assert [t.get_text() for t in grid.heatmap[-1].get_xticklabels()] == ["GC%"]
+
+
+def test_plot_vmin_shared_overrides_multi_strip_palettes_and_annotation_kinds():
+    from matplotlib.legend import Legend
+
+    a, b = _mat(name="WT"), _mat(seed=2, name="KO")
+    fig, grid = eh.plot(
+        {"WT": a, "KO": b},
+        shared=[["WT", "KO"]],
+        vmin={"WT": -1.5, "KO": -1.5},
+        vmax=8.0,
+        annotations={
+            "cls_a": pd.Series(["x", "y"] * 20, index=a.region_index),
+            "cls_b": pd.Series(["u", "v"] * 20, index=a.region_index),
+        },
+        height=2.0,
+        pyplot=False,
+    )
+    assert grid.heatmap[0].images[0].norm.vmin == pytest.approx(-1.5)
+    assert grid.heatmap[1].images[0].norm.vmax == pytest.approx(8.0)
+
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    assert len(legs) == 2
+    fig.draw_without_rendering()
+    assert legs[0].get_window_extent().y0 >= legs[1].get_window_extent().y1
+    c_a = legs[0].get_patches()[0].get_facecolor()
+    c_b = legs[1].get_patches()[0].get_facecolor()
+    assert c_a != c_b
+
+    with pytest.raises(ValueError, match="Conflicting"):
+        eh.plot({"WT": a, "KO": b}, shared=[["WT", "KO"]], vmax={"WT": 5.0, "KO": 9.0}, pyplot=False)
+    with pytest.raises(KeyError):
+        eh.plot({"WT": a}, vmin={"typo": 0.0}, pyplot=False)
+
+    int_codes = pd.Series([10, 2, 1, 0] * 10, index=a.region_index)
+    fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(2, 2))
+    cat_map = eh.annotation(int_codes, ax1, kind="categorical", max_rows=None)
+    assert list(cat_map.keys()) == [0, 1, 2, 10]
+    num_im = eh.annotation(int_codes, ax2, kind="numeric", q=None, max_rows=None)
+    assert num_im.norm.vmin == 0.0 and num_im.norm.vmax == 10.0
+    plt.close(fig2)
+

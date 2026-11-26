@@ -29,3 +29,11 @@ def test_docs_mention_only_real_api():
         names |= set(re.findall(r"\beh\.([A-Za-z_]\w*)", page.read_text()))
     missing = sorted(n for n in names if not hasattr(eh, n))
     assert not missing, f"docs mention eh.{missing}, which is not exported"
+
+
+def test_overview_matches_quickstart_plot():
+    assert not run_docs._check_overview_sync()
+    assert (DOCS / "images" / "overview.png").read_bytes() == (
+        DOCS / "images" / "quickstart-plot.png"
+    ).read_bytes()
+

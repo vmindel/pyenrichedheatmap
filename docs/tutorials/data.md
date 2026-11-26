@@ -50,7 +50,9 @@ print(b.sort_values(["region", "bin"]).groupby("region").head(2))
 - **Edges.** Bins before position 0 are always dropped. With `genome=` (a dict or a
   table like `pm.gintervals_all()`) bins past a chromosome end are dropped too, and
   chromosome names are matched with or without the `chr` prefix. Dropped bins are NaN
-  in the matrix.
+  in the matrix; likewise, dropping rows from `b` masks only those bins to NaN while
+  keeping every original region, so filter `regions` before `eh.bins` (or pass
+  `index=` to `eh.arrange`) to subset regions.
 
 ## Scale-regions mode
 

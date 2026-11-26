@@ -45,6 +45,9 @@ jobs:
       - name: Lint
         run: ruff check src tests docs/run_docs.py
 
+      - name: Type check
+        run: mypy src/enriched_heatmap
+
       - name: Test
         run: pytest -ra
 

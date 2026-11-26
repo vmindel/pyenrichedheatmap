@@ -11,12 +11,12 @@ The data path is three steps, each a plain DataFrame you can inspect:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, TypeGuard
 
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap._matrix import NormalizedMatrix
+from enriched_heatmap._matrix import Mode, NormalizedMatrix, _safe_get_indexer
 
 _ATTR = "enriched_heatmap"
 _RESERVED = {"chrom", "start", "end", "intervalID", "region", "bin", "chrom1", "start1", "end1"}
@@ -41,7 +41,7 @@ class _Regions:
 
     __hash__ = None  # type: ignore[assignment]
 
-    def __deepcopy__(self, memo: dict) -> _Regions:
+    def __deepcopy__(self, memo: dict[int, Any]) -> _Regions:
         return self
 
     def __len__(self) -> int:
@@ -77,6 +77,10 @@ def _match_chroms(chroms: np.ndarray, sizes: dict[str, int]) -> np.ndarray:
             )
         out[chroms == name] = alt
     return out
+
+
+def _is_strict_int(val: object) -> TypeGuard[int | np.integer[Any]]:
+    return isinstance(val, (int, np.integer)) and not isinstance(val, (bool, np.bool_))
 
 
 def bins(
@@ -136,17 +140,27 @@ def bins(
     Returns
     -------
     pandas.DataFrame
-        ``chrom, start, end, region, bin``. The layout (flanks, bin size, region order)
-        is kept in ``.attrs`` for :func:`matrix`; filtering rows keeps it.
+        ``chrom, start, end, region, bin``. The layout (flanks, bin size, and the full
+        ``regions`` index) is kept in ``.attrs`` for :func:`matrix` and :func:`matrices`.
+        Dropping rows from this table turns only those bins into ``NaN`` while keeping
+        every original region in the matrix; to subset regions, filter ``regions`` before
+        calling :func:`bins` or subset at plot time with ``eh.arrange(..., index=...)``.
     """
     c_chrom, c_start, c_end = cols
     for c in cols:
         if c not in regions.columns:
             raise KeyError(f"`regions` has no {c!r} column; pass cols=(chrom, start, end).")
-    if bin_size <= 0:
-        raise ValueError("`bin_size` must be positive.")
-    if upstream < 0 or downstream < 0:
-        raise ValueError("`upstream` and `downstream` must be non-negative.")
+    if not _is_strict_int(bin_size) or int(bin_size) <= 0:
+        raise ValueError("`bin_size` must be a positive integer.")
+    bin_size = int(bin_size)
+    if (
+        not _is_strict_int(upstream)
+        or not _is_strict_int(downstream)
+        or int(upstream) < 0
+        or int(downstream) < 0
+    ):
+        raise ValueError("`upstream` and `downstream` must be non-negative integers.")
+    upstream, downstream = int(upstream), int(downstream)
     if upstream % bin_size or downstream % bin_size:
         raise ValueError(
             f"`upstream` ({upstream}) and `downstream` ({downstream}) must be multiples of "
@@ -154,10 +168,12 @@ def bins(
         )
     if body_bins is None and anchor not in _ANCHORS:
         raise ValueError(f"`anchor` must be one of {_ANCHORS}, got {anchor!r}.")
-    if body_bins is not None and body_bins <= 0:
-        raise ValueError("`body_bins` must be positive.")
+    if body_bins is not None:
+        if not _is_strict_int(body_bins) or int(body_bins) <= 0:
+            raise ValueError("`body_bins` must be a positive integer.")
+        body_bins = int(body_bins)
     if snap is not None:
-        if isinstance(snap, bool) or not isinstance(snap, (int, np.integer)) or int(snap) <= 0:
+        if not _is_strict_int(snap) or int(snap) <= 0:
             raise ValueError("`snap` must be a positive integer.")
         snap = int(snap)
         if body_bins is not None:
@@ -165,9 +181,22 @@ def bins(
         if bin_size % snap or (bin_size // snap) % 2 == 0:
             raise ValueError(
                 f"`bin_size` ({bin_size}) must be an odd multiple of `snap` ({snap}) so the "
-                f"anchor bin is centred on the stored grid, e.g. bin_size={snap} or {3 * snap}.")
+                f"anchor bin is centred on the stored grid, e.g. bin_size={snap} or {3 * snap}."
+            )
 
-    region_ids = pd.Index(regions[id] if id is not None else regions.index)
+    n_up, n_down = upstream // bin_size, downstream // bin_size
+    n_body = body_bins or 0
+    centered = bool(snap) and body_bins is None
+    n_bins = n_up + n_body + n_down + int(centered)
+    if n_bins <= 0:
+        raise ValueError(
+            "Bin layout has 0 bins: at least one of `upstream`, `downstream`, "
+            "`body_bins`, or `snap` must be positive."
+        )
+
+    region_ids: pd.Index = (
+        pd.Index(regions[id], tupleize_cols=False) if id is not None else regions.index.copy()
+    )
     if not region_ids.is_unique:
         raise ValueError(
             "Region identifiers are not unique. Reset the index or pass id=<unique column>."
@@ -190,17 +219,13 @@ def bins(
     if sizes is not None:
         chrom = _match_chroms(chrom, sizes)
 
-    n_up, n_down = upstream // bin_size, downstream // bin_size
-    n_body = body_bins or 0
-    centered = bool(snap) and body_bins is None
-    n_bins = n_up + n_body + n_down + int(centered)
     n = len(regions)
 
     # Build every bin in genomic left-to-right order, then renumber minus rows 5'->3'.
     n_left = np.where(minus, n_down, n_up)
     k = np.arange(max(n_up, n_down))
     if body_bins is None:
-        if centered:
+        if snap is not None:
             # The anchor *base*, not a boundary: the 5' base of a minus region is end - 1.
             last = np.maximum(start, end - 1)
             if anchor == "center":
@@ -254,12 +279,17 @@ def bins(
         keep &= b_end <= clen[:, None]
 
     rows, cols_ = np.nonzero(keep)
+    region_col = (
+        region_ids.to_numpy()[rows]
+        if isinstance(region_ids, pd.MultiIndex)
+        else region_ids[rows]
+    )
     out = pd.DataFrame(
         {
             "chrom": chrom[rows],
             "start": b_start[rows, cols_],
             "end": b_end[rows, cols_],
-            "region": region_ids[rows],
+            "region": region_col,
             "bin": o_idx[rows, cols_].astype(np.int64),
         }
     )
@@ -280,17 +310,98 @@ def bins(
 
 def _layout(bins_df: pd.DataFrame) -> dict[str, Any]:
     layout = bins_df.attrs.get(_ATTR)
-    if layout is None:
+    if not isinstance(layout, dict):
         raise ValueError(
             "`bins` has lost its layout (it lives in DataFrame.attrs, which some pandas "
-            "operations such as merge or concat drop). Pass the table returned by "
-            "eh.bins() unchanged, or filter it with boolean indexing."
+            "operations such as merge, concat, or saving/reloading drop). Pass the table "
+            "returned by eh.bins() unchanged; to subset regions, filter `regions` before "
+            "calling eh.bins() or pass `index=` to eh.arrange()."
         )
     return layout
 
 
 def _value_columns(values: pd.DataFrame) -> list[str]:
     return [c for c in values.columns if c not in _RESERVED]
+
+
+def _float_array_to_int64(farr: np.ndarray, name: str) -> np.ndarray:
+    if not np.all(np.isfinite(farr)) or np.any(farr != np.floor(farr)):
+        raise ValueError(
+            f"`{name}` must contain finite integer values, not fractional or infinite floats."
+        )
+    mant_bits = int(np.finfo(farr.dtype).nmant) + 1
+    if mant_bits < 63:
+        max_exact = np.asarray(1 << mant_bits, dtype=farr.dtype)
+        if np.any(np.abs(farr) > max_exact):
+            raise ValueError(
+                f"`{name}` float values exceed exact integer range (2**{mant_bits})."
+            )
+    else:
+        lo = np.asarray(-(1 << 63), dtype=farr.dtype)
+        hi = np.asarray((1 << 63) - 1, dtype=farr.dtype)
+        if np.any((farr < lo) | (farr > hi)):
+            raise ValueError(f"`{name}` float values exceed int64 range.")
+    return farr.astype(np.int64)
+
+
+def _as_int64_index(series: pd.Series, name: str) -> np.ndarray:
+    """Validate an integer index Series and convert to 1D int64 without lossy casts."""
+    raw_dtype = series.dtype
+    dtype = (
+        series.cat.categories.dtype
+        if isinstance(raw_dtype, pd.CategoricalDtype)
+        else raw_dtype
+    )
+    if pd.api.types.is_bool_dtype(raw_dtype) or pd.api.types.is_bool_dtype(dtype):
+        raise ValueError(f"`{name}` must contain integer indices, not booleans.")
+    if series.isna().any():
+        raise ValueError(f"`{name}` must not contain missing values.")
+    if isinstance(raw_dtype, pd.CategoricalDtype):
+        series = pd.Series(series.cat.categories.take(series.cat.codes.to_numpy()))
+        dtype = series.dtype
+    if len(series) == 0:
+        if not pd.api.types.is_object_dtype(dtype) and not (
+            pd.api.types.is_integer_dtype(dtype) or pd.api.types.is_float_dtype(dtype)
+        ):
+            raise ValueError(
+                f"`{name}` must contain integer indices, got dtype {raw_dtype}."
+            )
+        return np.empty(0, dtype=np.int64)
+    if pd.api.types.is_signed_integer_dtype(dtype):
+        return series.to_numpy(dtype=np.int64)
+    if pd.api.types.is_unsigned_integer_dtype(dtype):
+        uarr = series.to_numpy(dtype=np.uint64)
+        if np.any(uarr > np.iinfo(np.int64).max):
+            raise ValueError(f"`{name}` values exceed int64 range.")
+        return uarr.astype(np.int64)
+    if pd.api.types.is_float_dtype(dtype):
+        farr = series.to_numpy()
+        if not np.issubdtype(farr.dtype, np.floating):
+            farr = series.to_numpy(dtype=np.float64)
+        return _float_array_to_int64(farr, name)
+    if not pd.api.types.is_object_dtype(dtype):
+        raise ValueError(f"`{name}` must contain integer indices, got dtype {raw_dtype}.")
+    i64_min = int(np.iinfo(np.int64).min)
+    i64_max = int(np.iinfo(np.int64).max)
+    out: list[int] = []
+    for x in series.to_numpy():
+        if isinstance(x, (bool, np.bool_)):
+            raise ValueError(f"`{name}` must contain integer indices, not booleans.")
+        if isinstance(x, (int, np.integer)):
+            iv = int(x)
+            if iv < i64_min or iv > i64_max:
+                raise ValueError(f"`{name}` values exceed int64 range.")
+            out.append(iv)
+        elif isinstance(x, (float, np.floating)):
+            fa = np.asarray(x)
+            if not np.issubdtype(fa.dtype, np.floating):
+                fa = np.asarray(float(x), dtype=np.float64)
+            out.append(int(_float_array_to_int64(fa, name).item()))
+        else:
+            raise ValueError(
+                f"`{name}` must contain integer indices, got {type(x).__name__}."
+            )
+    return np.array(out, dtype=np.int64)
 
 
 def matrices(
@@ -329,24 +440,26 @@ def matrices(
     """
     layout = _layout(bins)
     region_ids: pd.Index = layout["regions"].index
+    n_bins = int(layout["n_bins"])
     if {"region", "bin"} <= set(values.columns):
-        r = region_ids.get_indexer(values["region"].to_numpy())
-        b = values["bin"].to_numpy(dtype=np.int64)
+        r = _safe_get_indexer(region_ids, pd.Index(values["region"], tupleize_cols=False))
+        b = _as_int64_index(values["bin"], "values['bin']")
         if np.any(r < 0):
             raise ValueError("`values` has `region` labels that are not in `bins`.")
-        if b.size and (b.min() < 0 or b.max() >= layout["n_bins"]):
+        if b.size and (b.min() < 0 or b.max() >= n_bins):
             raise ValueError(
-                f"`values['bin']` must be in 0..{layout['n_bins'] - 1}, "
+                f"`values['bin']` must be in 0..{n_bins - 1}, "
                 f"got {int(b.min())}..{int(b.max())}."
             )
     else:
         if "intervalID" in values.columns:
-            pos = values["intervalID"].to_numpy(dtype=np.int64) - 1
-            if pos.size and (pos.min() < 0 or pos.max() >= len(bins)):
+            raw_id = _as_int64_index(values["intervalID"], "intervalID")
+            if raw_id.size and (raw_id.min() < 1 or raw_id.max() > len(bins)):
                 raise ValueError(
                     "`intervalID` values do not fit `bins`. Pass the same bins table as "
                     "both `intervals` and `iterator` to gextract, and the same table here."
                 )
+            pos = raw_id - 1
         else:
             same = (
                 len(values) == len(bins)
@@ -367,21 +480,40 @@ def matrices(
                     "match `bins` row for row. gextract sorts rows genomically, so keep its "
                     "default intervals_join, or use intervals_join='intervals'."
                 )
-            pos = np.arange(len(bins))
-        r = region_ids.get_indexer(bins["region"].to_numpy()[pos])
-        b = bins["bin"].to_numpy(dtype=np.int64)[pos]
+            pos = np.arange(len(bins), dtype=np.int64)
+        bins_b = _as_int64_index(bins["bin"], "bins['bin']")
+        r = _safe_get_indexer(
+            region_ids, pd.Index(bins["region"], tupleize_cols=False).take(pos)
+        )
+        b = bins_b[pos]
+        if np.any(r < 0):
+            raise ValueError("`bins` has `region` labels that are not in its layout.")
+        if b.size and (b.min() < 0 or b.max() >= n_bins):
+            raise ValueError(
+                f"`bins['bin']` must be in 0..{n_bins - 1}, "
+                f"got {int(b.min())}..{int(b.max())}."
+            )
+
+    if r.size > 1:
+        flat = r.astype(np.int64) * n_bins + b
+        if len(np.unique(flat)) != len(flat):
+            raise ValueError(
+                "Duplicate (region, bin) entries in `values` (for example duplicate "
+                "`intervalID` rows when `iterator=bins` was omitted in `gextract`). "
+                "Each heatmap bin may appear at most once."
+            )
 
     cols = list(columns) if columns is not None else _value_columns(values)
     if not cols:
         raise ValueError(f"No value columns found in `values` ({list(values.columns)}).")
-    mode = "scale_regions" if layout["body_bins"] else "reference_point"
+    mode: Mode = "scale_regions" if layout["body_bins"] else "reference_point"
     out: dict[str, NormalizedMatrix] = {}
     for c in cols:
-        arr = np.full((len(region_ids), layout["n_bins"]), np.nan, dtype=dtype)
+        arr = np.full((len(region_ids), n_bins), np.nan, dtype=dtype)
         arr[r, b] = values[c].to_numpy(dtype=dtype)
         out[c] = NormalizedMatrix(
             values=arr,
-            region_index=region_ids,
+            region_index=region_ids.copy(),
             mode=mode,
             upstream=layout["upstream"],
             downstream=layout["downstream"],

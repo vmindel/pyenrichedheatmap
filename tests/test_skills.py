@@ -73,3 +73,31 @@ def test_check_regions_script(tmp_path):
     ok = subprocess.run([sys.executable, str(script), str(bed), "--genome", str(sizes)],
                         capture_output=True, text=True)
     assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    import gzip
+
+    np_gz = tmp_path / "peaks.narrowPeak.gz"
+    with gzip.open(np_gz, "wt", encoding="utf-8") as fh:
+        fh.write("chr1\t2000\t2400\tpk1\t100\t1.0\t5\t10\t8\t200\n")
+        fh.write("chr9\t2000\t2400\tpk2\t120\t-1.0\t6\t11\t9\t200\n")
+    ok_gz = subprocess.run(
+        [sys.executable, str(script), str(np_gz), "--genome", str(sizes), "--id", "name"],
+        capture_output=True,
+        text=True,
+    )
+    assert ok_gz.returncode == 0 and "WARN" not in ok_gz.stdout
+
+    bad_id = subprocess.run(
+        [sys.executable, str(script), str(np_gz), "--id", "missing_col"],
+        capture_output=True,
+        text=True,
+    )
+    assert bad_id.returncode == 1 and "ERROR" in bad_id.stdout
+
+    bad_bin = subprocess.run(
+        [sys.executable, str(script), str(np_gz), "--bin-size", "0"],
+        capture_output=True,
+        text=True,
+    )
+    assert bad_bin.returncode == 1 and "ERROR" in bad_bin.stdout
+

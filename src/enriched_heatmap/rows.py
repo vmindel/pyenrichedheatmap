@@ -2,13 +2,36 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from enriched_heatmap._matrix import NormalizedMatrix
 from enriched_heatmap.ordering import HClust, OrderMetric, score
+
+
+def _validate_gap(gap: float) -> float:
+    if (
+        isinstance(gap, (bool, np.bool_))
+        or not isinstance(gap, (int, float, np.number))
+        or isinstance(gap, (complex, np.complexfloating))
+    ):
+        raise ValueError(f"`gap` must be a non-negative finite number, got {gap!r}.")
+    gap_f = float(gap)
+    if not (0.0 <= gap_f < math.inf):
+        raise ValueError(f"`gap` must be non-negative and finite, got {gap!r}.")
+    return gap_f
+
+
+def _validate_groups_type(groups: pd.Series | None) -> None:
+    if groups is not None and not isinstance(groups, pd.Series):
+        raise TypeError(
+            f"`groups` must be a pandas Series indexed by region, got {type(groups).__name__}."
+        )
 
 
 @dataclass(frozen=True)
@@ -34,12 +57,13 @@ class Rows:
     gap: float = 0.0
 
     def __post_init__(self) -> None:
+        gap_f = _validate_gap(self.gap)
+        object.__setattr__(self, "gap", gap_f)
+        _validate_groups_type(self.groups)
         if not isinstance(self.index, pd.Index):
             object.__setattr__(self, "index", pd.Index(self.index))
         if not self.index.is_unique:
             raise ValueError("`index` must contain unique region identifiers.")
-        if self.gap < 0:
-            raise ValueError("`gap` must be non-negative.")
         if self.groups is None:
             return
         if len(self.groups) != len(self.index) or not self.groups.index.equals(self.index):
@@ -58,13 +82,13 @@ class Rows:
         return len(self.index)
 
     @property
-    def labels(self) -> list:
+    def labels(self) -> list[Any]:
         """Group labels in drawing order (``[None]`` when ungrouped)."""
         if self.groups is None:
             return [None]
         return [lbl for lbl, *_ in self.spans()]
 
-    def spans(self) -> list[tuple[object, int, int, float, float]]:
+    def spans(self) -> list[tuple[Any, int, int, float, float]]:
         """``(label, first_row, stop_row, y_top, y_bottom)`` for each group.
 
         Rows occupy y in ``[0, height)`` with y increasing downwards, as drawn.
@@ -77,7 +101,8 @@ class Rows:
         codes, _ = pd.factorize(vals)
         starts = np.concatenate([[0], np.flatnonzero(np.diff(codes)) + 1])
         stops = list(starts[1:]) + [len(vals)]
-        out, y = [], 0.0
+        out: list[tuple[Any, int, int, float, float]] = []
+        y = 0.0
         for i0, i1 in zip(starts, stops, strict=True):
             n = int(i1 - i0)
             out.append((vals[i0], int(i0), int(i1), y, y + n))
@@ -96,7 +121,7 @@ class Rows:
         )
 
 
-def _scores_for(by, metric: OrderMetric) -> pd.Series | None:
+def _scores_for(by: Any, metric: OrderMetric) -> pd.Series | None:
     if by is None:
         return None
     if isinstance(by, NormalizedMatrix):
@@ -115,7 +140,7 @@ def arrange(
     metric: OrderMetric = "center_mean",
     ascending: bool = False,
     gap: float = 0.02,
-    index: pd.Index | None = None,
+    index: pd.Index | Sequence[Any] | None = None,
 ) -> Rows:
     """Decide the row order (and optional split) for a figure.
 
@@ -144,46 +169,58 @@ def arrange(
     -------
     Rows
     """
+    gap_f = _validate_gap(gap)
+    _validate_groups_type(groups)
+
     if isinstance(by, HClust):
         if groups is None:
             groups = by.clusters
         by = by.order
-    if index is None:
-        if isinstance(by, NormalizedMatrix):
-            index = by.region_index
-        elif isinstance(by, (pd.Series, pd.Index)):
-            index = by.index if isinstance(by, pd.Series) else by
-        elif groups is not None:
-            index = groups.index
-        else:
-            raise ValueError("Pass `by`, `groups` or `index` so the regions are known.")
-    index = pd.Index(index)
-    if not index.is_unique:
+
+    target_index: pd.Index
+    if index is not None:
+        target_index = index if isinstance(index, pd.Index) else pd.Index(index)
+    elif isinstance(by, NormalizedMatrix):
+        target_index = by.region_index
+    elif isinstance(by, pd.Series):
+        target_index = by.index
+    elif isinstance(by, pd.Index):
+        target_index = by
+    elif groups is not None:
+        target_index = groups.index
+    else:
+        raise ValueError("Pass `by`, `groups` or `index` so the regions are known.")
+
+    if not target_index.is_unique:
         raise ValueError("`index` must contain unique region identifiers.")
 
     if isinstance(by, pd.Index):
         if not by.is_unique:
             raise ValueError("`by` order Index must contain unique region identifiers.")
-        missing = index.difference(by)
+        missing = target_index.difference(by)
         if len(missing):
-            raise KeyError(f"{len(missing)} regions are not in the `by` order, e.g. {list(missing[:3])}.")
-        ordered = by[by.isin(index)]
+            raise KeyError(
+                f"{len(missing)} regions are not in the `by` order, e.g. {list(missing[:3])}."
+            )
+        ordered = by[by.isin(target_index)]
     else:
         scores = _scores_for(by, metric)
         if scores is None:
-            ordered = index
+            ordered = target_index
         else:
-            vals = scores.reindex(index).to_numpy(dtype=np.float64)
+            vals = scores.reindex(target_index).to_numpy(dtype=np.float64)
             key = np.where(np.isfinite(vals), vals if ascending else -vals, np.inf)
-            ordered = index[np.argsort(key, kind="stable")]
+            ordered = target_index[np.argsort(key, kind="stable")]
 
     if groups is None:
         return Rows(index=ordered, groups=None, gap=0.0)
 
     g = groups.reindex(ordered)
     if g.isna().any():
-        missing = ordered[g.isna().to_numpy()]
-        raise KeyError(f"{len(missing)} regions have no group, e.g. {list(missing[:3])}.")
+        missing_ids = ordered[g.isna().to_numpy()]
+        raise KeyError(
+            f"{len(missing_ids)} regions have no group, e.g. {list(missing_ids[:3])}."
+        )
     if isinstance(g.dtype, pd.CategoricalDtype):
         present = set(g.unique())
         levels = [c for c in g.cat.categories if c in present]
@@ -197,4 +234,4 @@ def arrange(
     ordered = ordered[pos]
     g = g.iloc[pos]
     g.index = ordered
-    return Rows(index=ordered, groups=g, gap=float(gap) * len(ordered))
+    return Rows(index=ordered, groups=g, gap=gap_f * len(ordered))

@@ -111,7 +111,7 @@ fig.colorbar(im, ax=ax, orientation="horizontal", fraction=0.04, pad=0.08)
 - `eh.arrange(mats["chec"])` sorts rows by the mean signal within 150 bp of the anchor;
   `metric=` picks another score.
 - The colour scale runs from 0 to the 99th percentile, so a handful of hot bins do not
-  wash out the rest; set `vmax=` or `q=` to change it.
+  wash out the rest; set `vmin=`, `vmax=` or `q=` to change it.
 - The heatmap body is rasterised and everything else stays vector in PDF output.
 
 ## The standard figure
@@ -137,8 +137,8 @@ fig, grid = eh.plot(mats, rows=rows, band="sem",
   order in the table does not matter.
 - Categorical annotation strips get a legend in the right margin
   (`annotation_legend=False` turns it off) and use their own palette
-  (`annotation_colors=`, which can also be a dict keyed by strip name), so a strip is
-  not mistaken for the groups.
+  (`annotation_colors=`, automatically offset across multiple categorical strips or
+  passed as a dict keyed by strip name), so a strip is not mistaken for the groups.
 - Numeric annotation strips get a colour bar underneath with the strip name below it
   (`annotation_colorbar=False` turns it off) and take per-strip colour scales via
   `annotation_cmap=`, `annotation_vmin=`, `annotation_vmax=` and `annotation_center=`.
