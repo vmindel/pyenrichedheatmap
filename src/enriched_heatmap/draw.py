@@ -835,7 +835,8 @@ def colorbar(
     """A thin colour bar with small ticks; returns the matplotlib Colorbar."""
     cb = cax.figure.colorbar(mappable, cax=cax, orientation=orientation)
     cb.ax.tick_params(labelsize=7, length=2)
-    cb.outline.set_linewidth(0.5)
+    # Older matplotlib stubs type `outline` as a callable Spine; it is a plain artist.
+    cast(Any, cb.outline).set_linewidth(0.5)
     if label:
         cb.set_label(label, fontsize=8)
     return cb

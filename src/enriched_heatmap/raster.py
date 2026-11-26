@@ -94,7 +94,7 @@ def downsample_rows(
     ends = edges[1:]
 
     if callable(agg):
-        out = np.empty((target_rows, n_cols), dtype=np.float64)
+        out: np.ndarray = np.empty((target_rows, n_cols), dtype=np.float64)
         for i in range(target_rows):
             out[i] = agg(arr[starts[i] : ends[i]])
         return out.astype(arr.dtype, copy=False)
