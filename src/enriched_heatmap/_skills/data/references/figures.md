@@ -21,16 +21,18 @@ default tab10), `color` (single line), `ylim`, `legend`, `title`.
 
 ## eh.annotation(series_or_df, ax, rows, ...)
 
-Categorical -> colour strip (`colors`, default tab10 like `eh.profile`), returns
-`{category: colour}`; numeric -> colour strip (`cmap`, `vmin`, `vmax`, `q`,
-`center`), returns the image; `kind="bar"` -> horizontal bars (unknown `kind`
-raises). A DataFrame draws one strip per column, each categorical or numeric on
-its own (numeric ones share a scale); with mixed columns it returns
-`{column: result}`. `legend=True` adds one legend per categorical column;
-`eh.legends(ax, [(title, colours), ...])` stacks legends yourself.
+`kind="auto"` (default): categorical/string/boolean -> discrete colour strip
+(`colors`, default tab10 like `eh.profile`), returns `{category: colour}`;
+numeric -> continuous colour strip (`cmap`, `vmin`, `vmax`, `q`, `center`),
+returns the image. Pass `kind="categorical"` (e.g. integer cluster codes sorted
+naturally) or `kind="numeric"` to override auto-detection, or `kind="bar"` for
+horizontal bars (unknown `kind` raises). A DataFrame draws one strip per column,
+each categorical or numeric on its own (numeric ones share a scale unless overridden);
+with mixed columns it returns `{column: result}`. `legend=True` adds one legend per
+categorical column; `eh.legends(ax, [(title, colours), ...])` stacks legends yourself.
 
 Helpers: `eh.group_labels(ax, rows, counts=True)`, `eh.legend(ax, colours)`,
-`eh.colorbar(image, cax, label)`, `eh.limits(mats, q, center)` -> shared
+`eh.colorbar(image, cax, label)`, `eh.limits(mats, q, center, rows)` -> shared
 (vmin, vmax), `eh.palette(labels, colors)` -> the mapping profiles use.
 
 ## eh.figure(widths, profile=True, colorbar=True, height=5, ...)
@@ -45,12 +47,14 @@ One column per matrix (dict keys are titles), group strip on the left when
 `rows` has groups, annotation strips on the right (`annotations=`: dict of
 name -> Series, a DataFrame or a Series, indexed by region; no shared
 identifiers with `rows` raises). Per-column options as a
-value or dict keyed by name: `cmap`, `center`, `vmax`. `shared=[["WT",
-"KO"]]` for one colour scale; `band`, `share_profile_y`, `colors`, `agg`,
+value or dict keyed by name: `cmap`, `center`, `vmin`, `vmax`. `shared=[["WT",
+"KO"]]` puts columns on one colour scale aligned to `rows` (consistent `vmin`/`vmax`/`center`
+across a shared group are honoured; conflicting values raise); `band`, `share_profile_y`, `colors`, `agg`,
 `width` (inches) and `widths` (relative factor per column, list in `mats` order
 or dict by name, default 1), `height`, `guides=False` (no dashed anchor lines), `pyplot=False` (plain Figure, not registered with pyplot, for
-loops), `annotation_colors` (default Set2, so strips differ from the
-groups; a dict keyed by strip name gives each categorical strip its own palette),
+loops), `annotation_colors` (default Set2, laid over the labels of all categorical
+strips so a label keeps its colour across strips; a dict keyed by strip name gives each categorical strip its own palette),
+`annotation_kind` ("auto", "categorical" or "numeric", value or dict keyed by strip name; e.g. integer cluster codes as categories),
 `annotation_cmap`/`annotation_vmin`/`annotation_vmax`/`annotation_center` (value or
 dict keyed by strip name, for numeric strips; colour bar under each, with the
 strip name below it, unless `annotation_colorbar=False`), `annotation_legend` (default True: legends for categorical strips in
@@ -59,4 +63,6 @@ the right margin). Returns `(fig, grid)`; edit axes afterwards as usual.
 ## Saving
 
 `fig.savefig("x.pdf", bbox_inches="tight")`: bodies are rasterised, the rest
-stays vector. Group labels sit left of the axes, so keep `bbox_inches`.
+stays vector. `eh.plot` expands its bottom and right margins for labels, colour
+bars and legends so plain `fig.savefig("x.png")` fits; for custom `eh.figure`
+layouts with group labels left of the axes, keep `bbox_inches="tight"`.

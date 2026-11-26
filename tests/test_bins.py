@@ -387,3 +387,326 @@ def test_public_names_are_not_modules():
     for name in ("bins", "matrix"):
         with pytest.raises(ImportError):
             importlib.import_module(f"enriched_heatmap.{name}")
+
+
+# ---------------------------------------------------------------------------
+# M1: Duplicate & pre-cast index validation (F01), strict bins params (F16),
+#     and read_bigwig chrom-end NaN parity & paths validation (F17)
+# ---------------------------------------------------------------------------
+def test_matrices_rejects_duplicate_cells_across_all_branches():
+    b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50)
+    n_bins = b.attrs["enriched_heatmap"]["n_bins"]
+
+    # Branch 2 (intervalID): duplicate intervalID=1 (e.g. omitted iterator=b)
+    dup_id = pd.DataFrame({"intervalID": [1, 1, 2], "v": [1.0, 99.0, 2.0]})
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrices(dup_id, b)
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrix(dup_id, b, "v")
+
+    # Branch 1 (explicit region + bin columns): duplicate ("a", 0)
+    dup_rb = pd.DataFrame({"region": ["a", "a", "b"], "bin": [0, 0, 1], "v": [1.0, 5.0, 2.0]})
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrix(dup_rb, b, "v")
+
+    # Branch 3 (positional row-for-row) and Branch 2 with concatenated bins
+    b_dup = pd.concat([b, b], ignore_index=True)
+    b_dup.attrs = dict(b.attrs)
+    pos_vals = b_dup[["chrom", "start", "end"]].assign(v=1.0)
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrix(pos_vals, b_dup, "v")
+    id_vals = pos_vals.assign(intervalID=np.arange(1, len(b_dup) + 1))
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrix(id_vals, b_dup, "v")
+
+    # Duplicate value column names would collide in the output dict
+    dup_cols = pd.DataFrame(np.ones((len(b), 2)), columns=["v", "v"]).assign(
+        intervalID=np.arange(1, len(b) + 1)
+    )
+    with pytest.raises(ValueError, match="duplicate column names"):
+        eh.matrices(dup_cols, b)
+
+    # Out-of-bounds bin checked BEFORE r * n_bins + b (where r=0, b=n_bins aliases r=1, b=0)
+    oob_alias = pd.DataFrame({"region": ["a", "b"], "bin": [n_bins, 0], "v": [1.0, 2.0]})
+    with pytest.raises(ValueError, match=r"0\.\."):
+        eh.matrix(oob_alias, b, "v")
+
+    # Tampered bins["region"] or bins["bin"] in Branch 2 / Branch 3 also caught
+    b_bad_reg = b.copy()
+    b_bad_reg["region"] = "unknown_region"
+    with pytest.raises(ValueError, match="not in its layout"):
+        eh.matrix(b_bad_reg[["chrom", "start", "end"]].assign(v=1.0), b_bad_reg, "v")
+
+    b_bad_bin = b.copy()
+    b_bad_bin["bin"] = n_bins
+    with pytest.raises(ValueError, match=r"0\.\."):
+        eh.matrix(b_bad_bin[["chrom", "start", "end"]].assign(v=1.0), b_bad_bin, "v")
+
+
+def test_matrices_validates_bin_and_interval_id_columns():
+    import warnings
+
+    b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50)
+
+    bad_columns = [
+        pd.Series([0.0, np.nan]),
+        pd.Series([0, pd.NA], dtype="Int64"),
+        pd.Series([0.0, pd.NA], dtype="Float64"),
+        pd.Series([1, None], dtype=object),
+        pd.Series([1.0, np.inf]),
+        pd.Series([1.0, -np.inf]),
+        pd.Series([True, False]),
+        pd.Series([True, False], dtype="boolean"),
+        pd.Series(pd.Categorical([True, False])),
+        pd.Series([1, True], dtype=object),
+        pd.Series([0.0, 0.5]),
+        pd.Series([-0.5, 1.0]),
+        pd.Series([1.9, 2.0], dtype="Float64"),
+        pd.Series(pd.Categorical([0.0, 1.5])),
+        pd.Series([1, 1.5], dtype=object),
+        pd.Series([1e20, 1.0]),
+        pd.Series([float(1 << 63), 1.0]),
+        pd.Series([float(1 << 54), 1.0]),
+        pd.Series([-float(1 << 54), 1.0]),
+        pd.Series([1, float(1 << 54)], dtype=object),
+        pd.Series(np.array([1 << 63, 1], dtype=np.uint64)),
+        pd.Series([1 << 63, 1], dtype="UInt64"),
+        pd.Series([1 << 100, 1], dtype=object),
+        pd.Series([-(1 << 100), 1], dtype=object),
+        pd.Series(["1", "2"]),
+        pd.Series(pd.Categorical(["1", "2"])),
+        pd.Series([object(), object()], dtype=object),
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for bad_s in bad_columns:
+            df_bin = pd.DataFrame({"region": ["a", "b"], "bin": bad_s, "v": [1.0, 2.0]})
+            with pytest.raises(ValueError):
+                eh.matrix(df_bin, b, "v")
+
+            df_id = pd.DataFrame({"intervalID": bad_s, "v": [1.0, 2.0]})
+            with pytest.raises(ValueError):
+                eh.matrix(df_id, b, "v")
+
+        # Empty StringDtype index column is rejected; intervalID bounds checked before - 1
+        with pytest.raises(ValueError):
+            eh.matrix(
+                pd.DataFrame(
+                    {
+                        "region": pd.Series([], dtype="string"),
+                        "bin": pd.Series([], dtype="string"),
+                        "v": pd.Series([], dtype=float),
+                    }
+                ),
+                b,
+                "v",
+            )
+        for bad_id in [0, -1, int(np.iinfo(np.int64).min), len(b) + 1]:
+            with pytest.raises(ValueError, match="intervalID"):
+                eh.matrix(pd.DataFrame({"intervalID": [bad_id], "v": [1.0]}), b, "v")
+
+    # Exact integer-valued floats, nullable Int64/Float64, Categorical[int], and 0-row frames succeed
+    ref_df = pd.DataFrame({"region": ["a", "a", "b"], "bin": [0, 1, 2], "v": [3.0, 4.0, 5.0]})
+    ref_mat = eh.matrix(ref_df, b, "v")
+    for bin_col in [
+        pd.Series([0.0, 1.0, 2.0]),
+        pd.Series([0.0, 1.0, 2.0], dtype="Float64"),
+        pd.Series([0, 1, 2], dtype="Int64"),
+        pd.Series(pd.Categorical([0, 1, 2])),
+        pd.Series(pd.Categorical([0.0, 1.0, 2.0])),
+        pd.Series([0.0, 1.0, 2.0], dtype=object),
+    ]:
+        got = eh.matrix(ref_df.assign(bin=bin_col), b, "v")
+        np.testing.assert_array_equal(got.values, ref_mat.values)
+
+    float_id = pd.DataFrame({"intervalID": [1.0, 2.0, 3.0], "v": [10.0, 20.0, 30.0]})
+    int_id = pd.DataFrame({"intervalID": [1, 2, 3], "v": [10.0, 20.0, 30.0]})
+    np.testing.assert_array_equal(
+        eh.matrix(float_id, b, "v").values,
+        eh.matrix(int_id, b, "v").values,
+    )
+
+    # Empty 0-row values and 0-region / all-off-chromosome bins
+    for empty_vals in [
+        ref_df.iloc[0:0],
+        pd.DataFrame(columns=["region", "bin", "v"]),
+        int_id.iloc[0:0],
+    ]:
+        m_empty = eh.matrix(empty_vals, b, "v")
+        assert m_empty.shape == (3, 4) and np.isnan(m_empty.values).all()
+
+    b_zero_reg = eh.bins(_regions().iloc[0:0], upstream=100, downstream=100, bin_size=50)
+    m_zero_reg = eh.matrix(pd.DataFrame(columns=["intervalID", "v"]), b_zero_reg, "v")
+    assert m_zero_reg.shape == (0, 4)
+
+    off_chrom = pd.DataFrame({"chrom": ["chr2"], "start": [20_000], "end": [20_010]}, index=["z"])
+    b_off = eh.bins(off_chrom, upstream=50, downstream=50, bin_size=50, genome=GENOME)
+    assert len(b_off) == 0
+    m_off = eh.matrix(b_off.assign(v=pd.Series([], dtype=float)), b_off, "v")
+    assert m_off.shape == (1, 2) and np.isnan(m_off.values).all()
+
+
+def test_pymisha_without_iterator_raises_duplicate_interval_id(misha_db):
+    pm = misha_db
+    regions = pd.DataFrame(
+        {"chrom": ["1", "2"], "start": [1050, 5050], "end": [1050, 5050]},
+        index=["p", "q"],
+    )
+    b = eh.bins(regions, upstream=100, downstream=100, bin_size=50, genome=pm.gintervals_all())
+    v_sub = pm.gextract("dense_track", intervals=b, iterator=20)
+    assert len(v_sub) > len(b)
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrix(v_sub, b)
+    with pytest.raises(ValueError, match="Duplicate"):
+        eh.matrices(v_sub, b)
+
+
+def test_bins_strict_integer_params_and_non_empty_layout():
+    r = _regions()
+
+    for bad in (True, False, np.bool_(True), 20.0, 0.5, 0, -10, "20"):
+        with pytest.raises(ValueError, match="positive integer"):
+            eh.bins(r, upstream=100, downstream=100, bin_size=bad)
+        with pytest.raises(ValueError, match="positive integer"):
+            eh.bins(r, upstream=100, downstream=100, bin_size=50, body_bins=bad)
+        with pytest.raises(ValueError, match="positive integer"):
+            eh.bins(r, upstream=100, downstream=100, bin_size=50, snap=bad)
+
+    for bad_flank in (True, False, np.bool_(False), 100.0, -50, "100"):
+        with pytest.raises(ValueError, match="non-negative"):
+            eh.bins(r, upstream=bad_flank, downstream=100, bin_size=50)
+        with pytest.raises(ValueError, match="non-negative"):
+            eh.bins(r, upstream=100, downstream=bad_flank, bin_size=50)
+
+    # NumPy integer scalars are accepted
+    b_np = eh.bins(
+        r,
+        upstream=np.int64(100),
+        downstream=np.int32(100),
+        bin_size=np.int64(50),
+        body_bins=np.int32(4),
+    )
+    assert b_np.attrs["enriched_heatmap"]["n_bins"] == 8
+
+    # n_bins == 0 rejected (even on 0-row regions)
+    for regs in (r, r.iloc[0:0]):
+        with pytest.raises(ValueError, match="0 bins"):
+            eh.bins(regs, upstream=0, downstream=0, bin_size=50)
+
+    # Valid zero-flank combinations succeed
+    b_right = eh.bins(r, upstream=0, downstream=200, bin_size=50)
+    assert eh.matrix(b_right.assign(v=1.0), b_right, "v").shape == (3, 4)
+
+    b_left = eh.bins(r, upstream=200, downstream=0, bin_size=50)
+    assert eh.matrix(b_left.assign(v=1.0), b_left, "v").shape == (3, 4)
+
+    b_body_only = eh.bins(r, upstream=0, downstream=0, bin_size=50, body_bins=5)
+    m_body_only = eh.matrix(b_body_only.assign(v=1.0), b_body_only, "v")
+    assert m_body_only.shape == (3, 5) and m_body_only.mode == "scale_regions"
+
+    b_snap_only = eh.bins(r, upstream=0, downstream=0, bin_size=20, snap=20)
+    m_snap_only = eh.matrix(b_snap_only.assign(v=1.0), b_snap_only, "v")
+    assert m_snap_only.shape == (3, 1)
+    assert m_snap_only.centered is True
+    assert m_snap_only.x_extent == (-10.0, 10.0)
+
+    # Clarified docstring & _layout guidance
+    assert eh.bins.__doc__ is not None and "eh.arrange" in eh.bins.__doc__
+    lost = eh.bins(r)
+    lost.attrs.clear()
+    with pytest.raises(ValueError, match=r"lost its layout.*eh\.arrange"):
+        eh.matrix(lost.assign(v=1.0), lost, "v")
+
+
+def test_read_bigwig_paths_validation_and_chrom_end_nan_parity(tmp_path):
+    import os
+    from types import MappingProxyType
+
+    pyBigWig = pytest.importorskip("pyBigWig")
+    path = tmp_path / "track.bw"
+    bw = pyBigWig.open(str(path), "w")
+    bw.addHeader([("chr1", 1000)])
+    bw.addEntries(["chr1"], [0], ends=[1000], values=[2.0])
+    bw.close()
+
+    class _StrPath:
+        def __fspath__(self) -> str:
+            return str(path)
+
+    class _BytesPath:
+        def __fspath__(self) -> bytes:
+            return os.fsencode(path)
+
+    r = pd.DataFrame({"chrom": ["chr1"], "start": [975], "end": [975]}, index=["edge"])
+    b_raw = eh.bins(r, upstream=100, downstream=100, bin_size=50, anchor="start")
+    b_gen = eh.bins(
+        r, upstream=100, downstream=100, bin_size=50, anchor="start", genome={"chr1": 1000}
+    )
+
+    # Upfront paths type & emptiness checks
+    for bad_paths in [
+        [path],
+        (path,),
+        {path},
+        123,
+        None,
+        b"track.bw",
+        _BytesPath(),
+        {"sig": [path]},
+        {"sig": None},
+        {"sig": b"track.bw"},
+        {"sig": _BytesPath()},
+    ]:
+        with pytest.raises(TypeError):
+            eh.read_bigwig(bad_paths, b_raw)
+
+    for empty_map in [{}, MappingProxyType({})]:
+        with pytest.raises(ValueError, match="empty"):
+            eh.read_bigwig(empty_map, b_raw)
+
+    # Custom os.PathLike[str] and MappingProxyType accepted
+    v_pathlike = eh.read_bigwig(_StrPath(), b_gen)
+    v_proxy = eh.read_bigwig(MappingProxyType({"track": _StrPath()}), b_gen)
+    np.testing.assert_array_equal(v_pathlike["track"].to_numpy(), v_proxy["track"].to_numpy())
+
+    # Exact parity with bins(..., genome=...) across all 4 agg modes on straddling [975, 1025) bin
+    expected_by_agg = {
+        "mean": [2.0, 2.0, np.nan, np.nan],
+        "sum": [100.0, 100.0, np.nan, np.nan],
+        "max": [2.0, 2.0, np.nan, np.nan],
+        "min": [2.0, 2.0, np.nan, np.nan],
+    }
+    for agg, expected_row in expected_by_agg.items():
+        m_raw = eh.matrix(eh.read_bigwig(str(path), b_raw, agg=agg), b_raw)
+        m_gen = eh.matrix(eh.read_bigwig(path, b_gen, agg=agg), b_gen)
+        np.testing.assert_allclose(m_raw.values, m_gen.values, equal_nan=True)
+        np.testing.assert_allclose(m_raw.values[0], expected_row, equal_nan=True)
+
+    # Filtered non-RangeIndex bins, straddling 0, negative, zero-width, unknown chrom, and 0-row
+    filtered = b_raw.iloc[[0, 2]]  # non-contiguous index [0, 2], second row straddles 1000
+    v_filt = eh.read_bigwig(path, filtered, agg="sum")
+    assert list(v_filt.index) == [0, 2]
+    np.testing.assert_allclose(v_filt["track"].to_numpy(), [100.0, np.nan], equal_nan=True)
+
+    custom_bins = pd.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr1", "chr1", "chr2", "chrUn"],
+            "start": [-50, -25, 100, 100, 1200, 10],
+            "end": [-10, 25, 100, 150, 1250, 60],
+            "region": ["r0", "r0", "r0", "r0", "r1", "r2"],
+            "bin": [0, 1, 2, 3, 0, 0],
+        },
+        index=[10, 20, 30, 40, 50, 60],
+    )
+    v_custom = eh.read_bigwig(path, custom_bins, agg="sum")
+    np.testing.assert_allclose(
+        v_custom["track"].to_numpy(),
+        [np.nan, np.nan, np.nan, 100.0, np.nan, np.nan],
+        equal_nan=True,
+    )
+
+    v_empty = eh.read_bigwig({"sig": path}, b_raw.iloc[0:0])
+    assert list(v_empty.columns) == ["chrom", "start", "end", "sig", "intervalID"]
+    assert len(v_empty) == 0
+

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike
 
 Mode = Literal["reference_point", "scale_regions"]
+_PadMode = Literal["edge", "symmetric", "reflect", "wrap", "constant"]
 
 
 def _format_bp(bp: float) -> str:
@@ -27,7 +30,7 @@ def _format_bp(bp: float) -> str:
     return f"{sign}{abs_bp:g} bp"
 
 
-_SMOOTH_MODES = {
+_SMOOTH_MODES: dict[str, _PadMode] = {
     # scipy.ndimage boundary mode -> numpy.pad equivalent
     "nearest": "edge",
     "reflect": "symmetric",
@@ -81,6 +84,89 @@ def _gaussian_smooth_1d_nan_aware(
     return out.astype(values.dtype, copy=False)
 
 
+def _validate_region_index(idx: pd.Index, what: str = "`region_index`") -> None:
+    """Region identifiers must be unique, non-missing and not booleans.
+
+    Missing identifiers cannot be matched reliably across panels, and booleans collide
+    with 0/1 under pandas' hashing (``True == 1``), so both are rejected once here. Every
+    lookup further down can then use plain pandas indexing.
+    """
+    if not idx.is_unique:
+        raise ValueError(f"{what} must contain unique region identifiers.")
+    if isinstance(idx, pd.MultiIndex):
+        missing = any(bool((np.asarray(c) < 0).any()) for c in idx.codes)
+    else:
+        missing = bool(idx.hasnans)
+    if missing:
+        raise ValueError(f"{what} must not contain missing (NaN/None) region identifiers.")
+    if not isinstance(idx, pd.MultiIndex):
+        dt = idx.categories.dtype if isinstance(idx, pd.CategoricalIndex) else idx.dtype
+        if pd.api.types.is_bool_dtype(dt) or (
+            pd.api.types.is_object_dtype(dt) and pd.api.types.infer_dtype(idx) == "boolean"
+        ):
+            raise ValueError(f"{what} must not be boolean; use string or integer region IDs.")
+
+
+def _safe_get_indexer(source: pd.Index, target: pd.Index) -> np.ndarray:
+    """Positions of ``target`` labels in ``source`` (-1 where absent), never raising.
+
+    ``Index.get_indexer`` has three traps this guards: a MultiIndex matches a deeper
+    MultiIndex by prefix, an IntervalIndex matches numbers by containment, and some
+    incompatible index pairs raise instead of returning -1.
+    """
+    none = np.full(len(target), -1, dtype=np.intp)
+    if len(target) == 0 or len(source) == 0:
+        return none
+    s_mi, t_mi = isinstance(source, pd.MultiIndex), isinstance(target, pd.MultiIndex)
+    if s_mi and t_mi and source.nlevels != target.nlevels:
+        return none
+    if isinstance(source, pd.IntervalIndex) != isinstance(target, pd.IntervalIndex):
+        return none
+    try:
+        return np.asarray(source.get_indexer(target), dtype=np.intp)
+    except (TypeError, ValueError, AssertionError, pd.errors.InvalidIndexError):
+        return none
+
+
+def _shares_labels(source: pd.Index, target: pd.Index) -> bool:
+    return source is target or bool(np.any(_safe_get_indexer(source, target) >= 0))
+
+
+def _bool_mask(key: Any, n: int) -> np.ndarray | None:
+    """Positions selected by a 1D boolean mask, or None if ``key`` is not one."""
+    dt = getattr(key, "dtype", None)
+    if isinstance(dt, pd.CategoricalDtype):
+        dt = dt.categories.dtype
+    if dt is not None and pd.api.types.is_bool_dtype(dt):
+        pass
+    elif dt is None or pd.api.types.is_object_dtype(dt):
+        if pd.api.types.infer_dtype(key, skipna=True) != "boolean":
+            return None
+    else:
+        return None
+    if bool(np.any(pd.isna(np.asarray(key, dtype=object)))):
+        raise ValueError("Boolean mask cannot contain NA / missing values.")
+    arr = np.asarray(key, dtype=bool)
+    if len(arr) != n:
+        raise ValueError(f"Boolean mask length ({len(arr)}) does not match n_regions ({n}).")
+    return np.flatnonzero(arr)
+
+
+def _as_1d_key(key: Any, what: str) -> Any:
+    """Reject containers that are not a 1D row selection; materialise iterators."""
+    if isinstance(key, tuple):
+        raise IndexError(f"NormalizedMatrix.{what} is 1D (rows only); tuple indexing is not supported.")
+    if isinstance(key, np.ndarray) and key.ndim != 1:
+        raise IndexError(f"NormalizedMatrix.{what} requires a 1D indexer, got {key.ndim}D array.")
+    if key is Ellipsis or isinstance(
+        key, (pd.DataFrame, Mapping, set, frozenset, bytes, bytearray, memoryview)
+    ):
+        raise TypeError(f"Cannot index NormalizedMatrix.{what} with {type(key).__name__}.")
+    if not isinstance(key, (np.ndarray, pd.Index, pd.Series, pd.api.extensions.ExtensionArray, list, range)):
+        key = list(key)
+    return key
+
+
 class _MatrixLocIndexer:
     """Label-based row indexer for NormalizedMatrix, mirroring pandas .loc."""
 
@@ -88,54 +174,64 @@ class _MatrixLocIndexer:
         self._matrix = matrix
 
     def __getitem__(self, key: Any) -> NormalizedMatrix:
-        idx = self._matrix.region_index
-        if isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype):
-            if key.isna().any():
-                raise ValueError("Boolean mask cannot contain NA / missing values.")
+        m = self._matrix
+        idx = m.region_index
+        if isinstance(key, tuple) and isinstance(idx, pd.MultiIndex):
+            key = [key]  # a full MultiIndex label selects one row
+        elif isinstance(key, slice):
+            slc = idx.slice_indexer(key.start, key.stop, key.step)
+            return m._subset_positions(np.arange(*slc.indices(len(idx)), dtype=np.intp))
+        elif not pd.api.types.is_list_like(key) and not isinstance(key, tuple):
+            if key is Ellipsis or isinstance(key, (bytearray, memoryview)):
+                raise TypeError(f"Cannot index NormalizedMatrix.loc with {type(key).__name__}.")
+            try:
+                hash(key)
+            except TypeError:
+                raise TypeError(
+                    f"Cannot index NormalizedMatrix.loc with unhashable {type(key).__name__}."
+                ) from None
+            if isinstance(idx, pd.IntervalIndex) and not isinstance(key, pd.Interval):
+                raise KeyError(key)
+            if isinstance(key, (bool, np.bool_)):
+                raise KeyError(key)  # region IDs are never boolean; True would match 1
+            pos = idx.get_loc(key)
+            if not isinstance(pos, (int, np.integer)):
+                raise KeyError(key)
+            return m._subset_positions(np.array([pos], dtype=np.intp))
+
+        key = _as_1d_key(key, "loc")
+        if isinstance(key, pd.Series) and _bool_mask(key.to_numpy(), len(key)) is not None:
             if not key.index.is_unique:
                 raise ValueError("Boolean Series index must contain unique identifiers.")
             if len(key) != len(idx):
                 raise ValueError(
-                    f"Boolean mask length ({len(key)}) does not match "
-                    f"n_regions ({len(idx)})."
+                    f"Boolean mask length ({len(key)}) does not match n_regions ({len(idx)})."
                 )
-            aligned = key.reindex(idx)
-            if aligned.isna().any():
+            pos = _safe_get_indexer(key.index, idx)
+            if np.any(pos < 0):
                 raise KeyError("Boolean Series index does not match `region_index`.")
-            return self._matrix._subset_positions(np.flatnonzero(aligned.to_numpy(dtype=bool)))
+            return m._subset_positions(np.flatnonzero(np.asarray(key.to_numpy()[pos], dtype=bool)))
+        mask = _bool_mask(key, len(idx))
+        if mask is not None:
+            return m._subset_positions(mask)
 
-        if isinstance(key, (np.ndarray, pd.Series, pd.Index, pd.api.extensions.ExtensionArray, list)):
-            is_bool = (
-                pd.api.types.is_bool_dtype(getattr(key, "dtype", None))
-                or (isinstance(key, list) and len(key) > 0 and all(isinstance(x, (bool, np.bool_)) for x in key))
-            )
-            if is_bool:
-                if pd.isna(key).any():
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                arr = np.asarray(key, dtype=bool)
-                if len(arr) != len(idx):
-                    raise ValueError(
-                        f"Boolean mask length ({len(arr)}) does not match "
-                        f"n_regions ({len(idx)})."
-                    )
-                return self._matrix._subset_positions(np.flatnonzero(arr))
-
-        if isinstance(key, slice):
-            slc = idx.slice_indexer(key.start, key.stop, key.step)
-            positions = np.arange(*slc.indices(len(idx)))
-            return self._matrix._subset_positions(positions)
-
-        if np.isscalar(key):
-            pos = idx.get_loc(key)
-            return self._matrix._subset_positions(np.array([pos], dtype=int))
-
-        key_idx = pd.Index(key)
-        positions = idx.get_indexer(key_idx)
+        if isinstance(key, pd.Index):
+            key_idx = key
+        else:
+            key_idx = pd.Index(list(key), tupleize_cols=isinstance(idx, pd.MultiIndex))
+        if pd.api.types.is_object_dtype(key_idx.dtype) and not isinstance(key_idx, pd.MultiIndex):
+            for x in key_idx:
+                try:
+                    hash(x)
+                except TypeError:
+                    raise TypeError(
+                        f"Cannot index NormalizedMatrix.loc with unhashable {type(x).__name__}."
+                    ) from None
+        positions = _safe_get_indexer(idx, key_idx)
         missing = positions < 0
         if np.any(missing):
-            missing_labels = list(key_idx[missing][:5])
-            raise KeyError(f"Region IDs not found in region_index: {missing_labels}")
-        return self._matrix._subset_positions(positions)
+            raise KeyError(f"Region IDs not found in region_index: {list(key_idx[missing][:5])}")
+        return m._subset_positions(positions)
 
 
 class _MatrixILocIndexer:
@@ -145,33 +241,47 @@ class _MatrixILocIndexer:
         self._matrix = matrix
 
     def __getitem__(self, key: Any) -> NormalizedMatrix:
+        m = self._matrix
+        n = m.n_regions
         if isinstance(key, (bool, np.bool_)):
             raise TypeError("Cannot index by location with a boolean scalar.")
-        if np.isscalar(key):
-            positions = np.array([int(key)], dtype=int)
-        elif isinstance(key, slice):
-            positions = np.arange(*key.indices(self._matrix.n_regions))
-        else:
-            is_bool = (
-                pd.api.types.is_bool_dtype(getattr(key, "dtype", None))
-                or (isinstance(key, list) and len(key) > 0 and all(isinstance(x, (bool, np.bool_)) for x in key))
-            )
-            if is_bool:
-                if pd.isna(key).any():
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                arr = np.asarray(key, dtype=bool)
-                if len(arr) != self._matrix.n_regions:
-                    raise ValueError(
-                        f"Boolean mask length ({len(arr)}) does not match "
-                        f"n_regions ({self._matrix.n_regions})."
+        if isinstance(key, (int, np.integer)):
+            return m._subset_positions(_check_bounds(np.array([int(key)], dtype=object), n))
+        if isinstance(key, slice):
+            for bound in (key.start, key.stop, key.step):
+                if bound is not None and (
+                    isinstance(bound, (bool, np.bool_)) or not isinstance(bound, (int, np.integer))
+                ):
+                    raise TypeError(
+                        f"Slice bounds for iloc must be integers or None, got {type(bound).__name__}."
                     )
-                positions = np.flatnonzero(arr)
-            else:
-                positions = np.asarray(key, dtype=int)
-        return self._matrix._subset_positions(positions)
+            return m._subset_positions(np.arange(*key.indices(n), dtype=np.intp))
+        if not pd.api.types.is_list_like(key) or isinstance(key, pd.MultiIndex):
+            raise TypeError(f"Cannot index by location with {type(key).__name__}.")
+        key = _as_1d_key(key, "iloc")
+        if isinstance(key, range):
+            if key and not (-n <= key[0] < n and -n <= key[-1] < n):  # len() overflows on huge ranges
+                raise IndexError(f"positional index out of bounds for axis 0 with size {n}")
+            return m._subset_positions(np.asarray(key, dtype=np.intp))
+        if len(key) == 0:
+            return m._subset_positions(np.empty(0, dtype=np.intp))
+        mask = _bool_mask(key, n)
+        if mask is not None:
+            return m._subset_positions(mask)
+        if pd.api.types.infer_dtype(key, skipna=False) != "integer":
+            raise TypeError("Positional indexer must contain integers or a boolean mask.")
+        return m._subset_positions(_check_bounds(np.asarray(key, dtype=object), n))
 
 
-@dataclass(eq=False)
+def _check_bounds(pos: np.ndarray, n: int) -> np.ndarray:
+    """Integer positions (Python ints in an object array, so huge values cannot wrap)."""
+    bad = [int(p) for p in pos if not -n <= int(p) < n]
+    if bad:
+        raise IndexError(f"positional index {bad[0]} is out of bounds for axis 0 with size {n}")
+    return pos.astype(np.intp)
+
+
+@dataclass(init=False, eq=False)
 class NormalizedMatrix:
     """Genomic signal matrix with explicit region alignment and coordinate geometry.
 
@@ -179,7 +289,7 @@ class NormalizedMatrix:
     ----------
     values : np.ndarray
         2D floating-point array of shape ``(n_regions, n_bins)``.
-    region_index : pd.Index
+    region_index : pd.Index, optional
         Unique region identifiers of length ``n_regions``.
     mode : {"reference_point", "scale_regions"}
         Coordinate mode for the bin axis.
@@ -195,7 +305,7 @@ class NormalizedMatrix:
         Human-readable signal/track name.
     strand_oriented : bool, default True
         Whether minus-strand regions have been oriented 5' -> 3'.
-    metadata : dict[str, Any]
+    metadata : dict[str, Any], optional
         Arbitrary metadata (e.g., loader provenance, differential flags, units).
     centered : bool, default False
         Reference-point only: an extra middle bin is centred on the anchor (from
@@ -210,7 +320,7 @@ class NormalizedMatrix:
     """
 
     values: np.ndarray
-    region_index: pd.Index | None = None
+    region_index: pd.Index
     mode: Mode = "reference_point"
     upstream: int = 1000
     downstream: int = 1000
@@ -221,39 +331,62 @@ class NormalizedMatrix:
     metadata: dict[str, Any] = field(default_factory=dict)
     centered: bool = False
 
-    def __post_init__(self) -> None:
-        arr = np.asarray(self.values)
+    def __init__(
+        self,
+        values: ArrayLike,
+        region_index: pd.Index | Sequence[Any] | np.ndarray | None = None,
+        mode: Mode = "reference_point",
+        upstream: int = 1000,
+        downstream: int = 1000,
+        bin_size: int = 10,
+        target_bins: int = 0,
+        name: str | None = "",
+        strand_oriented: bool = True,
+        metadata: Mapping[str, Any] | None = None,
+        centered: bool = False,
+    ) -> None:
+        arr = np.asarray(values)
         if arr.ndim != 2:
             raise ValueError(f"`values` must be a 2D array, got shape {arr.shape}.")
         if arr.dtype not in (np.float32, np.float64):
             arr = arr.astype(np.float64)
         self.values = arr
 
-        if self.region_index is None:
-            self.region_index = pd.RangeIndex(arr.shape[0])
-        elif not isinstance(self.region_index, pd.Index):
-            self.region_index = pd.Index(self.region_index)
+        if region_index is None:
+            idx: pd.Index = pd.RangeIndex(arr.shape[0])
+        elif isinstance(region_index, pd.Index):
+            idx = region_index
+        else:
+            idx = pd.Index(region_index)
 
-        if len(self.region_index) != arr.shape[0]:
+        if len(idx) != arr.shape[0]:
             raise ValueError(
-                f"`region_index` length ({len(self.region_index)}) does not match "
+                f"`region_index` length ({len(idx)}) does not match "
                 f"`values.shape[0]` ({arr.shape[0]})."
             )
-        if not self.region_index.is_unique:
-            raise ValueError("`region_index` must contain unique region identifiers.")
+        _validate_region_index(idx)
+        self.region_index = idx
 
-        if self.mode not in ("reference_point", "scale_regions"):
+        if mode not in ("reference_point", "scale_regions"):
             raise ValueError(
-                f"`mode` must be 'reference_point' or 'scale_regions', got {self.mode!r}."
+                f"`mode` must be 'reference_point' or 'scale_regions', got {mode!r}."
             )
-        if self.upstream < 0 or self.downstream < 0:
+        self.mode = mode
+        if upstream < 0 or downstream < 0:
             raise ValueError("`upstream` and `downstream` must be non-negative.")
-        if self.bin_size <= 0:
+        if bin_size <= 0:
             raise ValueError("`bin_size` must be positive.")
-        if self.target_bins < 0:
+        if target_bins < 0:
             raise ValueError("`target_bins` must be non-negative.")
 
-        self.centered = bool(self.centered)
+        self.upstream = upstream
+        self.downstream = downstream
+        self.bin_size = bin_size
+        self.target_bins = target_bins
+        self.name = "" if name is None else str(name)
+        self.strand_oriented = bool(strand_oriented)
+
+        self.centered = bool(centered)
         if self.centered and self.mode != "reference_point":
             raise ValueError("`centered` is only valid with mode='reference_point'.")
         if self.mode == "reference_point":
@@ -274,10 +407,7 @@ class NormalizedMatrix:
 
         self._check_geometry(arr.shape[1])
 
-        if self.metadata is None:
-            self.metadata = {}
-        else:
-            self.metadata = dict(self.metadata)
+        self.metadata = {} if metadata is None else dict(metadata)
 
     def _check_geometry(self, n_bins: int) -> None:
         """The column count must follow from the flanks and bin size, or ticks lie."""
@@ -301,7 +431,7 @@ class NormalizedMatrix:
                 + f" imply {expected}."
             )
 
-    def _geometry(self) -> tuple:
+    def _geometry(self) -> tuple[Mode, int, int, int, int, bool, int]:
         return (self.mode, self.upstream, self.downstream, self.bin_size, self.target_bins,
                 self.centered, self.n_bins)
 
@@ -360,7 +490,7 @@ class NormalizedMatrix:
         values: np.ndarray,
         region_index: pd.Index | None = None,
         name: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> NormalizedMatrix:
         return NormalizedMatrix(
             values=values,
@@ -391,15 +521,23 @@ class NormalizedMatrix:
     # ------------------------------------------------------------------
     def reindex(
         self,
-        region_index: pd.Index | list[Any],
+        region_index: pd.Index | Sequence[Any] | np.ndarray,
         fill_value: float = np.nan,
     ) -> NormalizedMatrix:
         """Align rows to ``region_index``, filling absent regions with ``fill_value``."""
-        target = region_index if isinstance(region_index, pd.Index) else pd.Index(region_index)
+        target = (
+            region_index
+            if isinstance(region_index, pd.Index)
+            else pd.Index(region_index, tupleize_cols=isinstance(self.region_index, pd.MultiIndex))
+        )
         if not target.is_unique:
             raise ValueError("Target `region_index` must contain unique identifiers.")
 
-        indexer = self.region_index.get_indexer(target)
+        return self._take_rows(_safe_get_indexer(self.region_index, target), target, fill_value)
+
+    def _take_rows(
+        self, indexer: np.ndarray, target: pd.Index, fill_value: float = np.nan
+    ) -> NormalizedMatrix:
         out = np.full((len(target), self.n_bins), fill_value, dtype=self.values.dtype)
         present = indexer >= 0
         if np.any(present):
@@ -487,9 +625,17 @@ class NormalizedMatrix:
             raise ValueError(
                 "Cannot combine matrices with different bin geometry (" + "; ".join(diff) + ")."
             )
-        if not other.region_index.equals(self.region_index):
-            return other.reindex(self.region_index)
-        return other
+        if other.region_index is self.region_index or other.region_index.equals(self.region_index):
+            return other
+        indexer = _safe_get_indexer(other.region_index, self.region_index)
+        if len(self.region_index) and len(other.region_index) and not np.any(indexer >= 0):
+            raise ValueError(
+                "`other` shares no region identifiers with `self` "
+                f"(self starts {list(self.region_index[:3])}, "
+                f"other starts {list(other.region_index[:3])}). "
+                "Pass `region_index=` when constructing matrices from arrays."
+            )
+        return other._take_rows(indexer, self.region_index)
 
     def subtract(self, other: NormalizedMatrix) -> NormalizedMatrix:
         """Compute ``self - other`` after aligning ``other`` to ``self.region_index``."""
@@ -595,9 +741,10 @@ class NormalizedMatrix:
 
     def to_dict(self) -> dict[str, Any]:
         """Export as a plain interchange dictionary (zero cross-package coupling)."""
-        return {
+        out: dict[str, Any] = {
             "values": self.values.copy(),
             "region_index": self.region_index.tolist(),
+            "region_index_name": self.region_index.name,
             "mode": self.mode,
             "upstream": self.upstream,
             "downstream": self.downstream,
@@ -608,24 +755,76 @@ class NormalizedMatrix:
             "metadata": dict(self.metadata),
             "centered": self.centered,
         }
+        if isinstance(self.region_index, pd.MultiIndex):
+            out["region_index_names"] = list(self.region_index.names)
+            if len(self.region_index) == 0:
+                out["region_index_level_dtypes"] = [
+                    str(lvl.dtype) for lvl in self.region_index.levels
+                ]
+        return out
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> NormalizedMatrix:
+    def from_dict(cls, payload: Mapping[str, Any]) -> NormalizedMatrix:
         """Construct a NormalizedMatrix from an interchange dictionary."""
         if "values" not in payload:
             raise KeyError("Interchange dict must contain a 'values' key.")
-        region_index = payload.get("region_index")
+        values = np.asarray(payload["values"])
+        raw_index = payload.get("region_index")
+        has_index_name = "region_index_name" in payload
+        index_name = payload.get("region_index_name")
+        index_names = payload.get("region_index_names")
+
+        def _empty_multiindex(names_seq: Sequence[Any]) -> pd.MultiIndex:
+            names_list = list(names_seq)
+            lvl_dtypes = payload.get("region_index_level_dtypes")
+            arrays: list[pd.Index] = []
+            if lvl_dtypes is not None and len(lvl_dtypes) == len(names_list):
+                for dt in lvl_dtypes:
+                    try:
+                        arrays.append(pd.Index([], dtype=dt))
+                    except TypeError:
+                        arrays.append(pd.Index([], dtype=object))
+            else:
+                arrays = [pd.Index([], dtype=object) for _ in names_list]
+            return pd.MultiIndex.from_arrays(arrays, names=names_list)
+
+        if raw_index is not None:
+            if isinstance(raw_index, pd.MultiIndex):
+                idx: pd.Index | None = (
+                    raw_index.set_names(list(index_names))
+                    if index_names is not None
+                    else raw_index.copy()
+                )
+            elif isinstance(raw_index, pd.Index):
+                idx = raw_index.rename(index_name) if has_index_name else raw_index.copy()
+            elif index_names is not None:
+                raw_list = list(raw_index)
+                if len(raw_list) > 0:
+                    idx = pd.MultiIndex.from_tuples(raw_list, names=list(index_names))
+                else:
+                    idx = _empty_multiindex(index_names)
+            elif has_index_name:
+                idx = pd.Index(raw_index, name=index_name, tupleize_cols=False)
+            else:
+                idx = pd.Index(raw_index, tupleize_cols=False)
+        elif index_names is not None and values.ndim == 2 and values.shape[0] == 0:
+            idx = _empty_multiindex(index_names)
+        elif has_index_name and index_name is not None and values.ndim == 2:
+            idx = pd.RangeIndex(values.shape[0], name=index_name)
+        else:
+            idx = None
+        raw_name = payload.get("name", "")
         return cls(
-            values=np.asarray(payload["values"]),
-            region_index=pd.Index(region_index) if region_index is not None else None,
+            values=values,
+            region_index=idx,
             mode=payload.get("mode", "reference_point"),
             upstream=int(payload.get("upstream", 1000)),
             downstream=int(payload.get("downstream", 1000)),
             bin_size=int(payload.get("bin_size", 10)),
             target_bins=int(payload.get("target_bins", 0)),
-            name=str(payload.get("name", "")),
+            name="" if raw_name is None else str(raw_name),
             strand_oriented=bool(payload.get("strand_oriented", True)),
-            metadata=dict(payload.get("metadata", {})),
+            metadata=dict(payload.get("metadata") or {}),
             centered=bool(payload.get("centered", False)),
         )
 

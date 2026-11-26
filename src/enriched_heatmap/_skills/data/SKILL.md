@@ -38,9 +38,11 @@ Run `python scripts/check_regions.py --help`.
   identifier, never by position.
 - Strand: `"+"`/`"-"` and `1`/`-1` both work. Matrices come out 5' -> 3';
   never flip them afterwards.
-- Pass the `eh.bins` table unchanged (or boolean-filtered) to the extraction
-  and to `eh.matrices`; its layout lives in `DataFrame.attrs`, which survives
-  `copy` and sorting but not `to_csv`/`to_parquet`, and `merge`/`concat` keep it
-  only on newer pandas (3.x).
+- Pass the `eh.bins` table unchanged to the extraction and to `eh.matrices`;
+  filtering rows from `bins` only masks those bins to `NaN` while keeping every
+  region in the matrix. To subset regions, filter the `regions` table before
+  `eh.bins` (or pass `index=` to `eh.arrange`). Its layout lives in
+  `DataFrame.attrs`, which survives `copy` and sorting but not
+  `to_csv`/`to_parquet`, and `merge`/`concat` keep it only on newer pandas (3.x).
 - Every drawing function takes the same `rows`; build it once with
   `eh.arrange(by, groups=...)`.

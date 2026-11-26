@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 from typing import Literal
@@ -9,6 +10,45 @@ from typing import Literal
 import numpy as np
 
 ProfileMode = Literal["mean", "median", "mean_sem", "mean_ci", "mean_boot_ci", "median_iqr"]
+_VALID_PROFILE_MODES: tuple[str, ...] = (
+    "mean",
+    "median",
+    "mean_sem",
+    "mean_ci",
+    "mean_boot_ci",
+    "median_iqr",
+)
+
+
+def _validate_profile_params(
+    mode: str, ci: float, n_bootstrap: int
+) -> tuple[float, int]:
+    """Validate profile mode, confidence interval ``ci``, and ``n_bootstrap`` upfront."""
+    if mode not in _VALID_PROFILE_MODES:
+        raise ValueError(
+            f"Unsupported `mode` {mode!r}. Choose from "
+            "'mean', 'median', 'mean_sem', 'mean_ci', 'mean_boot_ci', 'median_iqr'."
+        )
+    if (
+        isinstance(ci, (bool, np.bool_))
+        or not isinstance(ci, (int, float, np.number))
+        or isinstance(ci, (complex, np.complexfloating))
+    ):
+        raise ValueError(f"`ci` must be a float strictly in (0, 1), got {ci!r}.")
+    ci_f = float(ci)
+    if not (math.isfinite(ci_f) and 0.0 < ci_f < 1.0):
+        raise ValueError(
+            f"`ci` must be strictly in (0, 1) (e.g. 0.95, not 95), got {ci!r}."
+        )
+    if (
+        isinstance(n_bootstrap, (bool, np.bool_))
+        or not isinstance(n_bootstrap, (int, np.integer))
+        or int(n_bootstrap) < 1
+    ):
+        raise ValueError(
+            f"`n_bootstrap` must be an integer >= 1, got {n_bootstrap!r}."
+        )
+    return ci_f, int(n_bootstrap)
 
 
 @dataclass(frozen=True)
@@ -57,12 +97,13 @@ def compute_profile(
     mode : {"mean", "median", "mean_sem", "mean_ci", "mean_boot_ci", "median_iqr"}
         Summary statistic and error ribbon type.
     ci : float, default 0.95
-        Confidence level for ``"mean_ci"`` and ``"mean_boot_ci"``.
+        Confidence level strictly in ``(0, 1)`` for ``"mean_ci"`` and ``"mean_boot_ci"``.
     n_bootstrap : int, default 200
-        Number of bootstrap resamples for ``"mean_boot_ci"``.
+        Number of bootstrap resamples (``>= 1``) for ``"mean_boot_ci"``.
     random_state : int, default 42
         RNG seed for bootstrap resampling.
     """
+    ci, n_bootstrap = _validate_profile_params(mode, ci, n_bootstrap)
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim != 2:
         raise ValueError(f"`values` must be 2D, got shape {arr.shape}.")

@@ -84,3 +84,26 @@ def test_downsample_1d_and_categorical():
 def test_unsupported_aggregation_is_rejected():
     with pytest.raises(ValueError, match="Unsupported"):
         raster.downsample_rows(np.zeros((20, 2)), target_rows=5, agg="not_a_mode")
+    # Also rejected upfront even when n_rows <= target_rows
+    with pytest.raises(ValueError, match="Unsupported"):
+        raster.downsample_rows(np.zeros((3, 2)), target_rows=5, agg="q101")
+
+
+def test_q1_vs_q100_and_boolean_target_rows_rejected():
+    arr = np.repeat(np.arange(101, dtype=np.float64)[:, None], 2, axis=1)
+    q1 = raster.downsample_rows(arr, target_rows=1, agg="q1")
+    q100 = raster.downsample_rows(arr, target_rows=1, agg="q100")
+    np.testing.assert_allclose(q1, [[1.0, 1.0]])
+    np.testing.assert_allclose(q100, [[100.0, 100.0]])
+    # The number is always a percentile: q1.0 == q1, and fractional percentiles work
+    np.testing.assert_allclose(raster.downsample_rows(arr, target_rows=1, agg="q1.0"), q1)
+    np.testing.assert_allclose(raster.downsample_rows(arr, target_rows=1, agg="q99.9"), [[99.9, 99.9]])
+    np.testing.assert_allclose(raster.downsample_rows(arr, target_rows=1, agg="q0.5"), [[0.5, 0.5]])
+    for bad in ("q100.5", "q-1", "q+5", "q 5", "qnan", "q1e2", "q"):
+        with pytest.raises(ValueError, match="Unsupported"):
+            raster.downsample_rows(arr, target_rows=1, agg=bad)
+
+    for bad_tr in (True, False, 2.5, "10"):
+        with pytest.raises(ValueError, match="target_rows"):
+            raster.downsample_rows(arr, target_rows=bad_tr)  # type: ignore[arg-type]
+

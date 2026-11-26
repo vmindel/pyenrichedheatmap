@@ -480,12 +480,118 @@ def test_plot_numeric_strip_name_clears_its_colorbar(pyplot):
     assert [t.get_text() for t in ax_class.get_xticklabels()] == ["class"]
     # measure at the dpi it was drawn at: label positions are stored in pixels
     fig.savefig(io.BytesIO(), format="png", dpi=fig.dpi)
-    r = fig._get_renderer()
-    name = cax.xaxis.label.get_window_extent(r)
-    assert name.y1 <= cax.get_window_extent(r).y0
-    assert all(name.y1 <= t.get_window_extent(r).y0 + 1e-6
+    name = cax.xaxis.label.get_window_extent()
+    assert name.y1 <= cax.get_window_extent().y0
+    assert all(name.y1 <= t.get_window_extent().y0 + 1e-6
                for t in cax.get_xticklabels() if t.get_text())
     assert name.y0 > 0  # inside the figure without bbox_inches="tight"
     # no colour bar: the name stays under the strip
     fig, grid = eh.plot(m, annotations={"GC%": gc}, annotation_colorbar=False, pyplot=pyplot)
     assert [t.get_text() for t in grid.heatmap[-1].get_xticklabels()] == ["GC%"]
+
+
+def test_plot_vmin_shared_overrides_multi_strip_palettes_and_annotation_kinds():
+    from matplotlib.legend import Legend
+
+    a, b = _mat(name="WT"), _mat(seed=2, name="KO")
+    fig, grid = eh.plot(
+        {"WT": a, "KO": b},
+        shared=[["WT", "KO"]],
+        vmin={"WT": -1.5, "KO": -1.5},
+        vmax=8.0,
+        annotations={
+            "cls_a": pd.Series(["x", "y"] * 20, index=a.region_index),
+            "cls_b": pd.Series(["u", "v"] * 20, index=a.region_index),
+        },
+        height=2.0,
+        pyplot=False,
+    )
+    assert grid.heatmap[0].images[0].norm.vmin == pytest.approx(-1.5)
+    assert grid.heatmap[1].images[0].norm.vmax == pytest.approx(8.0)
+
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    assert len(legs) == 2
+    fig.draw_without_rendering()
+    assert legs[0].get_window_extent().y0 >= legs[1].get_window_extent().y1
+    c_a = legs[0].get_patches()[0].get_facecolor()
+    c_b = legs[1].get_patches()[0].get_facecolor()
+    assert c_a != c_b
+
+    with pytest.raises(ValueError, match="Conflicting"):
+        eh.plot({"WT": a, "KO": b}, shared=[["WT", "KO"]], vmax={"WT": 5.0, "KO": 9.0}, pyplot=False)
+    with pytest.raises(KeyError):
+        eh.plot({"WT": a}, vmin={"typo": 0.0}, pyplot=False)
+
+    int_codes = pd.Series([10, 2, 1, 0] * 10, index=a.region_index)
+    fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(2, 2))
+    cat_map = eh.annotation(int_codes, ax1, kind="categorical", max_rows=None)
+    assert list(cat_map.keys()) == [0, 1, 2, 10]
+    num_im = eh.annotation(int_codes, ax2, kind="numeric", q=None, max_rows=None)
+    assert num_im.norm.vmin == 0.0 and num_im.norm.vmax == 10.0
+    plt.close(fig2)
+
+
+
+def test_differential_auto_centre_yields_to_one_sided_bounds():
+    import matplotlib.colors as mcolors
+
+    a, b = _mat(name="WT"), _mat(seed=2, name="KO")
+    d = b.log2_ratio(a)
+    fig, ax = plt.subplots()
+    assert isinstance(eh.heatmap(d, ax).norm, mcolors.TwoSlopeNorm)
+    # vmax alone still mirrors around the automatic centre
+    norm = eh.heatmap(d, ax, vmax=2.0).norm
+    assert isinstance(norm, mcolors.TwoSlopeNorm) and norm.vmin == pytest.approx(-2.0)
+    # A bound 0 cannot sit inside asks for a one-sided scale instead of raising
+    norm = eh.heatmap(d, ax, vmin=0.1, vmax=2.0).norm
+    assert not isinstance(norm, mcolors.TwoSlopeNorm)
+    assert (norm.vmin, norm.vmax) == (pytest.approx(0.1), pytest.approx(2.0))
+    # An explicit centre still has to lie between the bounds
+    with pytest.raises(ValueError, match="strictly less than `center`"):
+        eh.heatmap(d, ax, center=0.0, vmin=0.0)
+    plt.close(fig)
+
+    # A scalar vmin=0 for signal columns no longer breaks a ratio column next to them
+    fig, grid = eh.plot({"WT": a, "KO": b, "KO/WT": d}, vmin=0.0, pyplot=False)
+    assert grid.heatmap[2].images[0].norm.vmin == 0.0
+
+
+def test_plot_annotation_palettes_follow_labels_and_kinds():
+    from matplotlib.legend import Legend
+
+    a = _mat()
+    s1 = pd.Series(["bound", "unbound"] * 20, index=a.region_index)
+    s2 = pd.Series(["unbound", "bound", "weak", "bound"] * 10, index=a.region_index)
+    s3 = pd.Series(["p", "q"] * 20, index=a.region_index)
+    fig, grid = eh.plot(a, annotations={"s1": s1, "s2": s2, "s3": s3}, pyplot=False)
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    pals = [
+        {t.get_text(): p.get_facecolor() for t, p in zip(L.get_texts(), L.get_patches(), strict=True)}
+        for L in legs
+    ]
+    # Same label, same colour on every strip; different labels never share one here
+    assert pals[0]["bound"] == pals[1]["bound"] and pals[0]["unbound"] == pals[1]["unbound"]
+    every = [c for p in pals for lbl, c in p.items() if lbl not in ("bound", "unbound")]
+    every += [pals[0]["bound"], pals[0]["unbound"]]
+    assert len(set(every)) == len(every)
+
+    # A typo in a shared {category: colour} mapping is reported as a colour error
+    with pytest.raises(ValueError, match="RGBA"):
+        eh.plot(a, annotations={"s1": s1, "s3": s3},
+                annotation_colors={"bound": "red", "unbound": "bleu"}, pyplot=False)
+    with pytest.raises(KeyError, match="unknown strip keys"):
+        eh.plot(a, annotations={"s1": s1}, annotation_colors={"s9": "Dark2"}, pyplot=False)
+
+    # Integer cluster codes as discrete categories through plot()
+    codes = pd.Series([0, 1, 2, 10] * 10, index=a.region_index)
+    fig, grid = eh.plot(a, annotations={"cl": codes}, annotation_kind={"cl": "categorical"},
+                        pyplot=False)
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    assert [t.get_text() for t in legs[0].get_texts()] == ["0", "1", "2", "10"]
+    assert grid.colorbar[-1] is None
+    fig, grid = eh.plot(a, annotations={"cl": codes}, pyplot=False)
+    assert grid.colorbar[-1] is not None  # default: numeric strip with a colour bar
+    with pytest.raises(ValueError, match="annotation_kind"):
+        eh.plot(a, annotations={"cl": codes}, annotation_kind="bar", pyplot=False)
+    with pytest.raises(KeyError):
+        eh.plot(a, annotations={"cl": codes}, annotation_kind={"typo": "numeric"}, pyplot=False)

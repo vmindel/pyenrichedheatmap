@@ -57,3 +57,18 @@ def test_bands_ignore_nan(mode):
     res = compute_profile(a, mode)
     assert np.isfinite(res.center).all()
     assert res.n_valid.max() <= 300 and res.n_valid.min() > 200
+
+
+@pytest.mark.parametrize("bad_ci", [0.0, 1.0, 95, -0.5, np.nan, np.inf, True, False])
+def test_compute_profile_validates_ci_upfront(bad_ci):
+    empty = np.empty((0, 6), dtype=np.float64)
+    with pytest.raises(ValueError, match="ci"):
+        compute_profile(empty, "mean_ci", ci=bad_ci)
+
+
+@pytest.mark.parametrize("bad_boot", [0, -10, True, False, 2.5])
+def test_compute_profile_validates_n_bootstrap_upfront(bad_boot):
+    empty = np.empty((0, 6), dtype=np.float64)
+    with pytest.raises(ValueError, match="n_bootstrap"):
+        compute_profile(empty, "mean_boot_ci", n_bootstrap=bad_boot)
+

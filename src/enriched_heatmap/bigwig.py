@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -11,14 +13,25 @@ import pandas as pd
 _AGGS = ("mean", "sum", "max", "min")
 
 
-def _open(path: str | Path):
+def _coerce_path(p: object, *, context: str = "`paths`") -> str:
+    if isinstance(p, (str, os.PathLike)):
+        fspath = os.fspath(p)
+        if isinstance(fspath, str):
+            return fspath
+    raise TypeError(
+        f"{context} must be a path (str or os.PathLike) or a non-empty mapping of "
+        f"{{column_name: path}}, got {type(p).__name__}."
+    )
+
+
+def _open(path: str | os.PathLike[str]) -> Any:
     try:
         import pyBigWig
     except ImportError as exc:
         raise ImportError(
             "read_bigwig needs pyBigWig: pip install 'pyenrichedheatmap[bigwig]'"
         ) from exc
-    return pyBigWig.open(str(path))
+    return pyBigWig.open(_coerce_path(path))
 
 
 def _resolve(name: str, chroms: dict[str, int]) -> str | None:
@@ -40,13 +53,19 @@ def _reduce(vals: np.ndarray, s: np.ndarray, e: np.ndarray, agg: str) -> np.ndar
         return np.where(cnt > 0, res, np.nan)
     fill = -np.inf if agg == "max" else np.inf
     filled = np.where(finite, vals, fill)
-    fn = np.maximum if agg == "max" else np.minimum
-    out = np.array([fn.reduce(filled[a:b]) if b > a else fill for a, b in zip(s, e, strict=True)])
+    out = np.array(
+        [
+            float(np.max(filled[a:b]) if agg == "max" else np.min(filled[a:b]))
+            if b > a
+            else fill
+            for a, b in zip(s, e, strict=True)
+        ]
+    )
     return np.where(np.isfinite(out), out, np.nan)
 
 
 def read_bigwig(
-    paths: str | Path | Mapping[str, str | Path],
+    paths: str | os.PathLike[str] | Mapping[str, str | os.PathLike[str]],
     bins: pd.DataFrame,
     agg: str = "mean",
 ) -> pd.DataFrame:
@@ -58,18 +77,27 @@ def read_bigwig(
 
     Parameters
     ----------
-    paths : path or dict of name to path
-        One bigWig, or several keyed by the column name to give each.
+    paths : str, os.PathLike, or Mapping of str to path
+        One bigWig path, or a non-empty mapping keyed by the column name to give each.
     bins : pandas.DataFrame
-        Output of :func:`bins`.
+        Output of :func:`bins`. Bins extending before ``0`` or past a chromosome end are
+        left as ``NaN``, matching ``bins(..., genome=...)``.
     agg : {"mean", "sum", "max", "min"}
         How base-pair values are combined within a bin. ``"mean"`` ignores positions
         with no data; a bin with no data at all is NaN.
     """
     if agg not in _AGGS:
         raise ValueError(f"`agg` must be one of {_AGGS}, got {agg!r}.")
-    if not isinstance(paths, Mapping):
-        paths = {Path(paths).stem: paths}
+    if isinstance(paths, Mapping):
+        if not paths:
+            raise ValueError("`paths` mapping must not be empty.")
+        path_map = {
+            str(k): _coerce_path(v, context=f"`paths[{k!r}]`")
+            for k, v in paths.items()
+        }
+    else:
+        single = _coerce_path(paths)
+        path_map = {Path(single).stem: single}
 
     out = bins[["chrom", "start", "end"]].copy()
     region_codes = pd.factorize(bins["region"])[0]
@@ -80,7 +108,7 @@ def read_bigwig(
     bounds = np.flatnonzero(np.diff(region_codes[order])) + 1
     groups = np.split(order, bounds) if len(order) else []
 
-    for name, path in paths.items():
+    for name, path in path_map.items():
         col = np.full(len(bins), np.nan)
         bw = _open(path)
         try:
@@ -89,16 +117,21 @@ def read_bigwig(
                 c = _resolve(str(chroms[idx[0]]), bw_chroms)
                 if c is None:
                     continue
-                lo = int(starts[idx].min())
-                hi = min(int(ends[idx].max()), bw_chroms[c])
-                if hi <= lo:
+                chrom_len = int(bw_chroms[c])
+                b_starts = starts[idx]
+                b_ends = ends[idx]
+                valid = (b_starts >= 0) & (b_ends <= chrom_len) & (b_ends > b_starts)
+                if not np.any(valid):
                     continue
+                valid_idx = idx[valid]
+                lo = int(b_starts[valid].min())
+                hi = int(b_ends[valid].max())
                 vals = np.asarray(bw.values(c, lo, hi, numpy=True), dtype=np.float64)
-                s = np.clip(starts[idx] - lo, 0, hi - lo)
-                e = np.clip(ends[idx] - lo, 0, hi - lo)
-                col[idx] = _reduce(vals, s, e, agg)
+                s = b_starts[valid] - lo
+                e = b_ends[valid] - lo
+                col[valid_idx] = _reduce(vals, s, e, agg)
         finally:
             bw.close()
-        out[str(name)] = col
+        out[name] = col
     out["intervalID"] = np.arange(1, len(bins) + 1)
     return out

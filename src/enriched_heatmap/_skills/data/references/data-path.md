@@ -54,7 +54,10 @@ m = eh.matrix(vals, b, value="atac")     # one column; value optional if only on
 ```
 
 - Value columns = every column except chrom/start/end/intervalID/region/bin.
-- Rows follow the region order given to `eh.bins`; missing bins are NaN.
+- Rows follow the region order given to `eh.bins`; missing bins are NaN. Dropping
+  rows from `b` only turns those bins into NaN while keeping every original region;
+  to subset regions, filter `regions` before `eh.bins` or pass `index=` to
+  `eh.arrange`. Duplicate or NaN `intervalID` or `(region, bin)` entries raise ValueError.
 - "lost its layout" ValueError: `b` was rebuilt, merged/concatenated (pandas 2.x
   drops `attrs` there) or written to disk (CSV/parquet). Rebuild it with `eh.bins`.
 - `eh.matrices(..., dtype=np.float64)` for raw counts above 16.7 million; the default
