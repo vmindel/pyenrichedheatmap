@@ -16,7 +16,12 @@ from typing import Any, TypeGuard
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap._matrix import Mode, NormalizedMatrix, _safe_get_indexer
+from enriched_heatmap._matrix import (
+    Mode,
+    NormalizedMatrix,
+    _safe_get_indexer,
+    _validate_region_index,
+)
 
 _ATTR = "enriched_heatmap"
 _RESERVED = {"chrom", "start", "end", "intervalID", "region", "bin", "chrom1", "start1", "end1"}
@@ -201,6 +206,7 @@ def bins(
         raise ValueError(
             "Region identifiers are not unique. Reset the index or pass id=<unique column>."
         )
+    _validate_region_index(region_ids, "Region identifiers")
 
     for c in (c_chrom, c_start, c_end):
         if regions[c].isna().any():
@@ -324,84 +330,34 @@ def _value_columns(values: pd.DataFrame) -> list[str]:
     return [c for c in values.columns if c not in _RESERVED]
 
 
-def _float_array_to_int64(farr: np.ndarray, name: str) -> np.ndarray:
-    if not np.all(np.isfinite(farr)) or np.any(farr != np.floor(farr)):
-        raise ValueError(
-            f"`{name}` must contain finite integer values, not fractional or infinite floats."
-        )
-    mant_bits = int(np.finfo(farr.dtype).nmant) + 1
-    if mant_bits < 63:
-        max_exact = np.asarray(1 << mant_bits, dtype=farr.dtype)
-        if np.any(np.abs(farr) > max_exact):
-            raise ValueError(
-                f"`{name}` float values exceed exact integer range (2**{mant_bits})."
-            )
-    else:
-        lo = np.asarray(-(1 << 63), dtype=farr.dtype)
-        hi = np.asarray((1 << 63) - 1, dtype=farr.dtype)
-        if np.any((farr < lo) | (farr > hi)):
-            raise ValueError(f"`{name}` float values exceed int64 range.")
-    return farr.astype(np.int64)
-
-
 def _as_int64_index(series: pd.Series, name: str) -> np.ndarray:
-    """Validate an integer index Series and convert to 1D int64 without lossy casts."""
-    raw_dtype = series.dtype
-    dtype = (
-        series.cat.categories.dtype
-        if isinstance(raw_dtype, pd.CategoricalDtype)
-        else raw_dtype
-    )
-    if pd.api.types.is_bool_dtype(raw_dtype) or pd.api.types.is_bool_dtype(dtype):
-        raise ValueError(f"`{name}` must contain integer indices, not booleans.")
-    if series.isna().any():
+    """Whole-number index column (``bin``, ``intervalID``) as int64.
+
+    Booleans, missing values, fractions, strings and magnitudes beyond 2**53 (where
+    float64 stops being exact) raise instead of being cast silently.
+    """
+    s = series.astype(object) if isinstance(series.dtype, pd.CategoricalDtype) else series
+    if bool(s.isna().any()):
         raise ValueError(f"`{name}` must not contain missing values.")
-    if isinstance(raw_dtype, pd.CategoricalDtype):
-        series = pd.Series(series.cat.categories.take(series.cat.codes.to_numpy()))
-        dtype = series.dtype
-    if len(series) == 0:
-        if not pd.api.types.is_object_dtype(dtype) and not (
-            pd.api.types.is_integer_dtype(dtype) or pd.api.types.is_float_dtype(dtype)
-        ):
-            raise ValueError(
-                f"`{name}` must contain integer indices, got dtype {raw_dtype}."
-            )
-        return np.empty(0, dtype=np.int64)
-    if pd.api.types.is_signed_integer_dtype(dtype):
-        return series.to_numpy(dtype=np.int64)
-    if pd.api.types.is_unsigned_integer_dtype(dtype):
-        uarr = series.to_numpy(dtype=np.uint64)
-        if np.any(uarr > np.iinfo(np.int64).max):
-            raise ValueError(f"`{name}` values exceed int64 range.")
-        return uarr.astype(np.int64)
-    if pd.api.types.is_float_dtype(dtype):
-        farr = series.to_numpy()
-        if not np.issubdtype(farr.dtype, np.floating):
-            farr = series.to_numpy(dtype=np.float64)
-        return _float_array_to_int64(farr, name)
-    if not pd.api.types.is_object_dtype(dtype):
-        raise ValueError(f"`{name}` must contain integer indices, got dtype {raw_dtype}.")
-    i64_min = int(np.iinfo(np.int64).min)
-    i64_max = int(np.iinfo(np.int64).max)
-    out: list[int] = []
-    for x in series.to_numpy():
-        if isinstance(x, (bool, np.bool_)):
-            raise ValueError(f"`{name}` must contain integer indices, not booleans.")
-        if isinstance(x, (int, np.integer)):
-            iv = int(x)
-            if iv < i64_min or iv > i64_max:
-                raise ValueError(f"`{name}` values exceed int64 range.")
-            out.append(iv)
-        elif isinstance(x, (float, np.floating)):
-            fa = np.asarray(x)
-            if not np.issubdtype(fa.dtype, np.floating):
-                fa = np.asarray(float(x), dtype=np.float64)
-            out.append(int(_float_array_to_int64(fa, name).item()))
-        else:
-            raise ValueError(
-                f"`{name}` must contain integer indices, got {type(x).__name__}."
-            )
-    return np.array(out, dtype=np.int64)
+    if pd.api.types.is_object_dtype(s.dtype):
+        kind = pd.api.types.infer_dtype(s, skipna=False)
+        ok = kind in ("integer", "floating", "mixed-integer-float", "empty")
+    else:
+        kind = str(series.dtype)
+        ok = pd.api.types.is_numeric_dtype(s.dtype) and not pd.api.types.is_bool_dtype(s.dtype)
+    if not ok:
+        raise ValueError(f"`{name}` must contain integer indices, got {kind}.")
+    try:
+        arr = s.to_numpy(dtype=np.float64)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError(f"`{name}` values exceed the exact integer range (2**53).") from None
+    with np.errstate(invalid="ignore"):
+        whole = np.isfinite(arr) & (arr == np.round(arr))
+    if not whole.all():
+        raise ValueError(f"`{name}` must contain finite integer values, not fractions.")
+    if arr.size and np.abs(arr).max() > 2.0**53:
+        raise ValueError(f"`{name}` values exceed the exact integer range (2**53).")
+    return arr.astype(np.int64)
 
 
 def matrices(
@@ -506,6 +462,9 @@ def matrices(
     cols = list(columns) if columns is not None else _value_columns(values)
     if not cols:
         raise ValueError(f"No value columns found in `values` ({list(values.columns)}).")
+    dup_cols = sorted({str(c) for c in values.columns[values.columns.duplicated()] if c in cols})
+    if dup_cols:
+        raise ValueError(f"`values` has duplicate column names {dup_cols}; each signal needs one.")
     mode: Mode = "scale_regions" if layout["body_bins"] else "reference_point"
     out: dict[str, NormalizedMatrix] = {}
     for c in cols:

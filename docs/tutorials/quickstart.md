@@ -137,8 +137,9 @@ fig, grid = eh.plot(mats, rows=rows, band="sem",
   order in the table does not matter.
 - Categorical annotation strips get a legend in the right margin
   (`annotation_legend=False` turns it off) and use their own palette
-  (`annotation_colors=`, automatically offset across multiple categorical strips or
-  passed as a dict keyed by strip name), so a strip is not mistaken for the groups.
+  (`annotation_colors=`, one palette over the labels of all strips so a label keeps
+  its colour across strips, or a dict keyed by strip name), so a strip is not
+  mistaken for the groups.
 - Numeric annotation strips get a colour bar underneath with the strip name below it
   (`annotation_colorbar=False` turns it off) and take per-strip colour scales via
   `annotation_cmap=`, `annotation_vmin=`, `annotation_vmax=` and `annotation_center=`.

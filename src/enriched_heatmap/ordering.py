@@ -9,7 +9,7 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 import pandas as pd
 
-from enriched_heatmap._matrix import NormalizedMatrix, _index_isna, _safe_get_indexer
+from enriched_heatmap._matrix import NormalizedMatrix, _shares_labels
 
 OrderMetric = (
     Literal["mean", "median", "max", "sum", "center_mean", "center_max", "enriched_score"]
@@ -18,15 +18,6 @@ OrderMetric = (
 MatrixLike = NormalizedMatrix | pd.DataFrame | np.ndarray
 ScaleMode = Literal["zscore", "row_zscore", "none"]
 _VALID_SCALES: tuple[str, ...] = ("zscore", "row_zscore", "none")
-
-
-def _has_any_overlap(source: pd.Index, target: pd.Index) -> bool:
-    if source is target:
-        return len(source) > 0
-    indexer = _safe_get_indexer(source, target)
-    tgt_na = _index_isna(target)
-    both_all_na = bool(tgt_na.all()) and bool(_index_isna(source).all())
-    return bool(np.any(indexer >= 0)) if both_all_na else bool(np.any((indexer >= 0) & ~tgt_na))
 
 
 _HCLUST_WARN_ROWS = 20_000
@@ -201,7 +192,7 @@ def _extract_feature_block(
             region_index is not None
             and len(region_index) > 0
             and len(item.region_index) > 0
-            and not _has_any_overlap(item.region_index, region_index)
+            and not _shares_labels(item.region_index, region_index)
         ):
             raise ValueError(
                 "Secondary matrix shares no region identifiers with the primary matrix "
@@ -218,7 +209,7 @@ def _extract_feature_block(
             if (
                 len(region_index) > 0
                 and len(item.index) > 0
-                and not _has_any_overlap(item.index, region_index)
+                and not _shares_labels(item.index, region_index)
             ):
                 raise ValueError(
                     "Secondary DataFrame shares no region identifiers with the primary matrix "

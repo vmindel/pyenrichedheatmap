@@ -52,8 +52,9 @@ value or dict keyed by name: `cmap`, `center`, `vmin`, `vmax`. `shared=[["WT",
 across a shared group are honoured; conflicting values raise); `band`, `share_profile_y`, `colors`, `agg`,
 `width` (inches) and `widths` (relative factor per column, list in `mats` order
 or dict by name, default 1), `height`, `guides=False` (no dashed anchor lines), `pyplot=False` (plain Figure, not registered with pyplot, for
-loops), `annotation_colors` (default Set2, automatically offset across multiple
-categorical strips when sharing one qualitative palette; a dict keyed by strip name gives each categorical strip its own palette),
+loops), `annotation_colors` (default Set2, laid over the labels of all categorical
+strips so a label keeps its colour across strips; a dict keyed by strip name gives each categorical strip its own palette),
+`annotation_kind` ("auto", "categorical" or "numeric", value or dict keyed by strip name; e.g. integer cluster codes as categories),
 `annotation_cmap`/`annotation_vmin`/`annotation_vmax`/`annotation_center` (value or
 dict keyed by strip name, for numeric strips; colour bar under each, with the
 strip name below it, unless `annotation_colorbar=False`), `annotation_legend` (default True: legends for categorical strips in

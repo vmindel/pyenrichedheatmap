@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import math
+import re
 import warnings
 from collections.abc import Callable
 from typing import Literal
@@ -31,25 +31,15 @@ def _bucket_edges(n_rows: int, target_rows: int) -> np.ndarray:
 
 
 def _parse_quantile_agg(agg: str) -> float | None:
-    """Parse ``"q1"`` -> ``0.01``, ``"q90"`` -> ``0.90``, ``"q0.5"`` -> ``0.50``, etc."""
-    if len(agg) < 2 or agg[0] not in ("q", "Q"):
+    """``"q90"`` -> 0.90, ``"q99.9"`` -> 0.999, ``"q1"`` -> 0.01.
+
+    The number is always a percentile in [0, 100], so ``"q1"`` and ``"q1.0"`` agree.
+    """
+    m = re.fullmatch(r"[qQ](\d+(?:\.\d+)?)", agg)
+    if m is None:
         return None
-    body = agg[1:]
-    if body != body.strip() or body.startswith("+"):
-        return None
-    if "." in body:
-        try:
-            q = float(body)
-        except ValueError:
-            return None
-        if math.isfinite(q) and 0.0 <= q <= 1.0:
-            return q
-        return None
-    if body.isascii() and body.isdigit():
-        pct = int(body)
-        if 0 <= pct <= 100:
-            return pct / 100.0
-    return None
+    pct = float(m.group(1))
+    return pct / 100.0 if pct <= 100.0 else None
 
 
 def downsample_rows(
@@ -75,7 +65,7 @@ def downsample_rows(
         - ``"min"``: NaN-safe bucket minimum.
         - ``"absmax"``: Signed value with largest magnitude (ideal for differential log2FC).
         - ``"median"``: NaN-safe bucket median.
-        - ``"q90"``, ``"q95"``, ``"qXX"``: NaN-safe bucket quantile (e.g., 90th percentile).
+        - ``"q90"``, ``"q99.9"``, ``"qXX"``: NaN-safe bucket percentile in [0, 100].
         - Callable ``fn(chunk_2d) -> row_1d`` for custom aggregation.
     """
     target_rows = _validate_target_rows(target_rows)

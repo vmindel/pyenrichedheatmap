@@ -88,7 +88,8 @@ eh.legend(grid.profile[1], eh.palette(rows.labels, "Set2"), bbox_to_anchor=(1.05
 - `kind="bar"` draws numeric annotations as bars; the default (`kind="auto"`) picks a
   discrete colour strip for categorical/string/boolean values or a continuous strip for
   numbers, and `kind="categorical"` or `kind="numeric"` overrides that (e.g. to draw
-  integer cluster codes as discrete categories).
+  integer cluster codes as discrete categories). In `eh.plot` the same choice is
+  `annotation_kind=` (a value or a dict keyed by strip name).
 - Any axes in `grid` is a normal matplotlib axes; add text, lines or limits as usual.
 
 ## Shared scales and differential matrices
@@ -123,9 +124,11 @@ fig, grid = eh.plot({"WT": mats["chec"], "KO": mats["chec_ko"], "log2(KO/WT)": d
   strips keep `annotation_width`.
 - `annotations=` accepts a dict of `name -> Series`, a `DataFrame` (one strip per
   column) or a single `Series`, indexed by region.
-  - Categorical strips take `annotation_colors=` (a palette shared and automatically
-    offset across strips, or a dict keyed by strip name so each strip gets its own
-    palette) and get a legend in the right margin (`annotation_legend=False` hides it).
+  - Categorical strips take `annotation_colors=` (one palette laid over the labels of
+    all strips, so the same label has the same colour everywhere and different labels
+    differ, or a dict keyed by strip name so each strip gets its own palette) and get a
+    legend in the right margin (`annotation_legend=False` hides it). Integer codes
+    become categories with `annotation_kind={"cluster": "categorical"}`.
   - Numeric strips take `annotation_cmap=`, `annotation_vmin=`, `annotation_vmax=` and
     `annotation_center=` (a value or a dict keyed by strip name) and get a colour bar
     underneath with the strip name below it (`annotation_colorbar=False` hides the bar

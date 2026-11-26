@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import matplotlib as mpl
 import matplotlib.cm as mcm
@@ -210,6 +210,10 @@ def _is_strict_palette_spec(v: Any) -> bool:
     return not mcolors.is_color_like(v)
 
 
+StripKind = Literal["auto", "categorical", "numeric"]
+_STRIP_KINDS: tuple[str, ...] = ("auto", "categorical", "numeric")
+
+
 def _is_cmap_name(v: Any) -> bool:
     return isinstance(v, str) and v in mpl.colormaps
 
@@ -217,73 +221,43 @@ def _is_cmap_name(v: Any) -> bool:
 def _resolve_annotation_palettes(
     colors: Any,
     annotations: dict[str, pd.Series],
+    categorical: Mapping[str, bool],
     rows: Rows,
 ) -> dict[str, Any]:
-    """Resolve per-strip or shared categorical palettes, validating keys and offsetting shared qualitative palettes."""
-    ann_names = list(annotations)
-    cat_by_strip: dict[str, list[Any]] = {
+    """``annotation_colors`` per strip.
+
+    A dict is per-strip when every value is a palette (colormap name or object, list of
+    colours, ``{category: colour}`` dict) and its keys are strip names or at least not
+    categories; any other dict is one ``{category: colour}`` mapping for every strip.
+    A shared palette is laid over the union of all strips' categories, so a label keeps
+    its colour on every strip and different labels get different colours.
+    """
+    names = list(annotations)
+    cats_by_strip = {
         n: draw._categories_for_series(sr.reindex(rows.index))
         for n, sr in annotations.items()
-        if draw._is_categorical(sr)
+        if categorical[n]
     }
-    all_cat_values: set[Any] = {c for cats in cat_by_strip.values() for c in cats}
-
-    if isinstance(colors, Mapping):
-        if not colors:
-            return {n: colors for n in ann_names}
-        is_per_strip = any(_is_strict_palette_spec(v) for v in colors.values()) or (
-            all(_is_cmap_name(v) for v in colors.values())
-            and (set(colors) <= set(ann_names) or not (set(colors) & all_cat_values))
-        )
-
-        if is_per_strip:
-            unknown = [k for k in colors if k not in ann_names]
-            if unknown:
-                raise KeyError(
-                    f"`annotation_colors` has unknown strip keys {unknown}; "
-                    f"expected subset of {ann_names}."
-                )
-            for v in colors.values():
-                if isinstance(v, str):
-                    _ = mpl.colormaps[v]
-            return {n: colors.get(n, "Set2") for n in ann_names}
-        return {n: colors for n in ann_names}
-
-    # Shared non-mapping palette: offset qualitative ListedColormap (N <= 20) or colour sequences across strips
-    if isinstance(colors, (str, mcolors.Colormap)):
-        cm = mpl.colormaps[colors] if isinstance(colors, str) else colors
-        if isinstance(cm, mcolors.ListedColormap) and cm.N <= 20:
-            out_cm: dict[str, Any] = {}
-            offset = 0
-            for n in ann_names:
-                if n in cat_by_strip:
-                    cats = cat_by_strip[n]
-                    k_len = len(cats)
-                    out_cm[n] = [cm((offset + i) % cm.N) for i in range(max(k_len, 1))]
-                    offset += k_len
-                else:
-                    out_cm[n] = colors
-            return out_cm
-        return {n: cm for n in ann_names}
-
-    seq_list = list(colors)
-    out_seq: dict[str, Any] = {}
-    offset = 0
-    for n in ann_names:
-        if n in cat_by_strip:
-            cats = cat_by_strip[n]
-            if not seq_list and cats:
-                raise ValueError("`annotation_colors` must not be empty.")
-            k_len = len(cats)
-            out_seq[n] = (
-                [seq_list[(offset + i) % len(seq_list)] for i in range(k_len)]
-                if (seq_list and k_len > 0)
-                else seq_list
+    if isinstance(colors, Mapping) and colors:
+        all_cats = {c for cats in cats_by_strip.values() for c in cats}
+        keys = set(colors)
+        per_strip = all(
+            _is_strict_palette_spec(v) or _is_cmap_name(v) for v in colors.values()
+        ) and (keys <= set(names) or not keys & all_cats)
+        if not per_strip:
+            return {n: colors for n in names}
+        unknown = [k for k in colors if k not in names]
+        if unknown:
+            raise KeyError(
+                f"`annotation_colors` has unknown strip keys {unknown}; expected a subset of {names}."
             )
-            offset += k_len
-        else:
-            out_seq[n] = seq_list
-    return out_seq
+        for v in colors.values():
+            if isinstance(v, str):
+                mpl.colormaps[v]  # a misspelt colormap name raises here, before drawing
+        return {n: colors.get(n, "Set2") for n in names}
+    union = list(dict.fromkeys(c for cats in cats_by_strip.values() for c in cats))
+    shared = draw.palette(union, colors)
+    return {n: shared if n in cats_by_strip else colors for n in names}
 
 
 def _resolve_shared_group_bound(
@@ -391,6 +365,7 @@ def plot(
     annotation_vmax: float | Mapping[str, float] | None = None,
     annotation_center: float | Mapping[str, float] | None = None,
     annotation_colorbar: bool = True,
+    annotation_kind: StripKind | Mapping[str, StripKind] = "auto",
     guides: bool = True,
     pyplot: bool = True,
 ) -> tuple[Figure, Grid]:
@@ -435,11 +410,10 @@ def plot(
         With groups, add a labelled colour strip on the left.
     annotation_colors : colormap name, list or dict
         Category colours of the categorical annotation strips. Differs from ``colors``
-        by default so a strip is not mistaken for the groups; when several categorical
-        strips share one qualitative palette (such as the default ``"Set2"``), strip
-        offsets advance automatically so adjacent strips use distinct colours. A dict
-        keyed by strip name gives each strip its own palette; any other dict is one
-        ``{category: colour}`` mapping shared by every strip.
+        by default so a strip is not mistaken for the groups. One palette is laid over
+        the categories of all strips together, so a label has the same colour on every
+        strip and different labels differ. A dict keyed by strip name gives each strip
+        its own palette; any other dict is one ``{category: colour}`` mapping.
     annotation_legend : bool
         Legend in the right margin for every categorical annotation strip.
     annotation_cmap : colormap name or object, or dict keyed by strip name
@@ -452,6 +426,9 @@ def plot(
         A colour bar under every numeric annotation strip, with the strip name below
         it. The figure grows at the bottom and right so long names and legends are not
         cut off.
+    annotation_kind : {"auto", "categorical", "numeric"} or dict keyed by strip name
+        How each strip is read, as ``kind=`` of :func:`annotation`; e.g.
+        ``{"cluster": "categorical"}`` draws integer cluster codes as discrete colours.
     guides : bool
         Dashed reference lines at the anchor (and body end) in heatmaps and profiles.
     pyplot : bool
@@ -493,7 +470,16 @@ def plot(
         _ = draw._validate_finite_bound(_pick(annotation_vmax, n), "annotation_vmax")
         _ = draw._validate_finite_bound(_pick(annotation_center, n), "annotation_center")
 
-    palettes = _resolve_annotation_palettes(annotation_colors, ann_dict, rows)
+    _validate_dict_keys(annotation_kind, ann_names, "annotation_kind")
+    kinds = {n: _pick(annotation_kind, n, "auto") for n in ann_names}
+    for n, k in kinds.items():
+        if k not in _STRIP_KINDS:
+            raise ValueError(f"`annotation_kind` for {n!r} must be one of {_STRIP_KINDS}, got {k!r}.")
+    strip_categorical = {
+        n: kinds[n] == "categorical" or (kinds[n] == "auto" and draw._is_categorical(sr))
+        for n, sr in ann_dict.items()
+    }
+    palettes = _resolve_annotation_palettes(annotation_colors, ann_dict, strip_categorical, rows)
 
     if isinstance(shared, (str, bytes)) or not isinstance(shared, Sequence):
         raise TypeError(
@@ -518,7 +504,7 @@ def plot(
         grp_vmin = _resolve_shared_group_bound(vmin, group, "vmin")
         grp_vmax = _resolve_shared_group_bound(vmax, group, "vmax")
         grp_center_explicit = _resolve_shared_group_bound(center, group, "center")
-        grp_center = draw._center_for(group_mats, grp_center_explicit)
+        grp_center = draw._center_for(group_mats, grp_center_explicit, grp_vmin, grp_vmax)
         grp_vals = np.concatenate([gm.values.ravel() for gm in group_mats])
         grp_norm = draw._norm(grp_vals, grp_vmin, grp_vmax, q, grp_center)
         assert grp_norm.vmin is not None and grp_norm.vmax is not None
@@ -533,12 +519,12 @@ def plot(
     )
     is_hm = ([False] if grouped else []) + [True] * len(names) + [False] * len(ann_dict)
     categorical = (
-        [n for n, sr in ann_dict.items() if draw._is_categorical(sr)]
+        [n for n in ann_names if strip_categorical[n]]
         if annotation_legend
         else []
     )
     numeric_cbar = [
-        annotation_colorbar and not draw._is_categorical(sr) for sr in ann_dict.values()
+        annotation_colorbar and not strip_categorical[n] for n in ann_names
     ]
     has_cbar = is_hm[: len(is_hm) - len(ann_dict)] + numeric_cbar
     margins = (0.7, 1.3 if categorical else 0.3, 0.35, 0.75 if any(numeric_cbar) else 0.55)
@@ -615,6 +601,7 @@ def plot(
                 series.rename(name),
                 grid.heatmap[col],
                 rows,
+                kind=kinds[name],
                 colors=palettes[name],
                 labels=cax is None,
                 cmap=_pick(annotation_cmap, name, "viridis"),

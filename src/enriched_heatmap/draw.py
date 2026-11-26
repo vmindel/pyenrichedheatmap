@@ -18,7 +18,7 @@ from matplotlib.image import AxesImage
 from matplotlib.legend import Legend
 from matplotlib.patches import Patch, Rectangle
 
-from enriched_heatmap._matrix import NormalizedMatrix, _index_isna, _safe_get_indexer
+from enriched_heatmap._matrix import NormalizedMatrix, _shares_labels
 from enriched_heatmap.profiles import ProfileMode, _validate_profile_params, compute_profile
 from enriched_heatmap.raster import (
     DownsampleAgg,
@@ -46,11 +46,7 @@ _ANNOTATION_KINDS: tuple[str, ...] = ("auto", "color", "categorical", "numeric",
 def _ensure_overlap(source: pd.Index, target: pd.Index, label: str = "`mat`") -> None:
     if len(source) == 0 or len(target) == 0 or source is target:
         return
-    indexer = _safe_get_indexer(source, target)
-    tgt_na = _index_isna(target)
-    both_all_na = bool(tgt_na.all()) and bool(_index_isna(source).all())
-    ok = bool(np.any(indexer >= 0)) if both_all_na else bool(np.any((indexer >= 0) & ~tgt_na))
-    if not ok:
+    if not _shares_labels(source, target):
         raise ValueError(
             f"{label} shares no region identifiers with `rows` "
             f"(data index starts {list(source[:3])}, rows start {list(target[:3])}). "
@@ -215,11 +211,24 @@ def _norm(
     return mcolors.Normalize(vmin=lo, vmax=hi)
 
 
-def _center_for(mats: Sequence[NormalizedMatrix], center: float | None) -> float | None:
-    """Differential matrices (``subtract``, ``log2_ratio``) are centred on 0 unless told otherwise."""
-    if center is None and mats and all(m.metadata.get("is_differential") for m in mats):
-        return 0.0
-    return center
+def _center_for(
+    mats: Sequence[NormalizedMatrix],
+    center: float | None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> float | None:
+    """Differential matrices (``subtract``, ``log2_ratio``) are centred on 0 unless told
+    otherwise. An explicit bound that 0 cannot sit inside (``vmin >= 0`` or ``vmax <= 0``)
+    asks for a one-sided scale, so it turns the automatic centre off."""
+    if center is not None or not mats:
+        return center
+    if not all(m.metadata.get("is_differential") for m in mats):
+        return None
+    lo = _validate_finite_bound(vmin, "vmin")
+    hi = _validate_finite_bound(vmax, "vmax")
+    if (lo is not None and lo >= 0) or (hi is not None and hi <= 0):
+        return None
+    return 0.0
 
 
 def _set_ylim(ax: Axes, rows: Rows) -> None:
@@ -356,7 +365,8 @@ def heatmap(
         out the rest. ``None`` uses the maximum.
     center : float, optional
         Diverging scale around this value (e.g. 0 for a log2 ratio). Differential
-        matrices (from ``subtract`` or ``log2_ratio``) default to ``center=0``.
+        matrices (from ``subtract`` or ``log2_ratio``) default to ``center=0``, unless
+        ``vmin >= 0`` or ``vmax <= 0`` asks for a one-sided scale.
     norm : matplotlib.colors.Normalize, optional
         Overrides ``vmin``/``vmax``/``q``/``center``.
     max_rows : "auto", int or None
@@ -389,7 +399,7 @@ def heatmap(
     target = _target_rows(ax, len(rows), max_rows)
     vals = mat.reindex(rows.index).values if not mat.region_index.equals(rows.index) else mat.values
     _validate_finite_bound(center, "center")
-    eff_center = _center_for([mat], center)
+    eff_center = _center_for([mat], center, vmin, vmax)
     if norm is None:
         norm = _norm(vals, vmin, vmax, q, eff_center)
     if cmap is None:
@@ -542,6 +552,8 @@ def legends(
     ``x`` and ``y`` are axes coordinates of the first legend's upper-left corner.
     """
     fig = _root_figure(ax)
+    if fig.get_layout_engine() is not None:
+        fig.draw_without_rendering()  # a layout engine places the axes only at draw time
     cur_y = float(y)
     n_items = len(items)
     for idx, (title, colors) in enumerate(items):
@@ -560,8 +572,7 @@ def legends(
         ax.add_artist(leg)
         leg.set_clip_on(False)  # add_artist clips to the axes, and these sit outside
         if idx + 1 < n_items:
-            fig.draw_without_rendering()
-            leg_box = leg.get_window_extent()
+            leg_box = leg.get_window_extent()  # measured without drawing the figure
             pad_px = 6.0 * fig.dpi / 72.0
             _, cur_y = ax.transAxes.inverted().transform((0.0, float(leg_box.y0) - pad_px))
 

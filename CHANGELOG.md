@@ -8,7 +8,8 @@
   column name, matching `vmax=` and `center=`).
 - `annotation(kind="categorical" | "numeric")`: explicit discrete or continuous mode to
   override `kind="auto"`, e.g. so integer cluster codes draw as discrete categories
-  sorted naturally (`0, 1, ..., 10`).
+  sorted naturally (`0, 1, ..., 10`). In `plot` it is `annotation_kind=` (a value or a
+  dict keyed by strip name).
 - `limits(..., rows=)`: aligns each matrix to `rows.index` before computing shared
   `(vmin, vmax)` bounds.
 - `NormalizedMatrix.to_dict` and `from_dict` preserve `region_index.name` (`region_index_name`
@@ -25,23 +26,28 @@
   at the bottom and right to fit labels, colour bars, and stacked legends cleanly under
   plain `fig.savefig(...)`.
 - `plot(annotation_colors=)` also takes a dict keyed by strip name, one palette per
-  categorical strip. When multiple categorical strips share one qualitative palette
-  (such as `"Set2"`), colour slots are automatically offset across strips so distinct
-  annotations do not reuse the same swatch colours.
-- Full `py.typed` / `mypy` static type checking across all public functions and classes
-  (including `Mapping` support in `kmeans`, `hclust`, `limits`, and `plot`), enforced in
-  CI alongside `[project.urls]` metadata.
+  categorical strip. A shared palette (the default `"Set2"`) is laid over the labels
+  of all categorical strips together: a label has the same colour on every strip, and
+  different labels get different colours. With several strips whose labels differ,
+  colours therefore change from 0.4.0, where every strip restarted the palette.
+- Type annotations on the public API, a `py.typed` marker, and `mypy` in CI (default
+  settings, not `--strict`). `kmeans`, `hclust`, `limits` and `plot` accept any
+  `Mapping` of matrices. `[project.urls]` metadata.
 
 Review fixes. Behaviour changes are marked **(breaking)**.
 
 ### Fixed
 
+- **(breaking)** Region identifiers must be unique, non-missing and not boolean, checked
+  once in `NormalizedMatrix` and `bins`. A NaN/None ID cannot be matched reliably across
+  panels and `True` hashes equal to `1`, so both used to give silent mismatches.
 - **(breaking)** `matrices` and `matrix` reject duplicate or missing `intervalID` values,
   duplicate or missing `(region, bin)` pairs, boolean/fractional/non-finite index dtypes,
   and duplicate value column names instead of silently overwriting bins.
 - **(breaking)** `kmeans`, `hclust`, `heatmap`, `profile`, and `limits(..., rows=)`
   raise `ValueError` when a non-empty matrix shares zero `region_index` identifiers with
-  the primary matrix or `rows` (matching `annotation`), including cross-dtype comparisons.
+  the primary matrix or `rows` (matching `annotation`). Lookups never match a
+  MultiIndex by prefix or an IntervalIndex by containment.
 - **(breaking)** `plot` validates keys in `cmap`, `center`, `vmin`, `vmax`,
   `annotation_cmap`, `annotation_vmin`, `annotation_vmax`, `annotation_center`, and
   `annotation_colors` upfront, aligns `shared` groups to `rows`, honours consistent
@@ -50,8 +56,8 @@ Review fixes. Behaviour changes are marked **(breaking)**.
   matrix used to replace the earlier one, dropping a column without warning.
 - **(breaking)** `bins(snap=)` takes a positive integer only. `snap=0` used to mean no
   snapping and now raises (pass `snap=None`); booleans and floats such as `20.0` also
-  raise across integer geometry parameters (`upstream`, `downstream`, `bin_size`,
-  `body_bins`, `target_bins`, `max_rows`, `k`, `n_boot`).
+  raise across integer parameters (`upstream`, `downstream`, `bin_size`, `body_bins`,
+  `max_rows`, `k`, `n_boot`).
 - **(breaking)** `read_bigwig` clips bins before 0 or past chromosome ends to `NaN`
   instead of crashing `pyBigWig`, and rejects empty path mappings or non-path inputs.
 - **(breaking)** `Rows` and `arrange` validate finite `0 <= gap < inf` upfront and
@@ -59,9 +65,10 @@ Review fixes. Behaviour changes are marked **(breaking)**.
   region identifiers. Empty grouped `Rows` and 0-row `kmeans`/`hclust` run warning-free.
 - **(breaking)** `profile` and `compute_profile` validate `0 < ci < 1` and positive
   integer `n_boot`/`n_bootstrap` upfront (so `ci=95` raises instead of inverting bounds).
-- **(breaking)** `downsample_rows` / `heatmap(agg="q1")` interprets `"q1"`..`"q99"` as
-  1st..99th percentiles (`"q1.0"` or `"q100"` for 100%).
-- `legends` measures rendered legend bounding boxes so stacked legends never overlap on
+- **(breaking)** `agg="qXX"` (`downsample_rows`, `heatmap`, `plot`) is always a
+  percentile in [0, 100]: `"q1"` is the 1st percentile (it used to be the maximum),
+  `"q99.9"` the 99.9th and `"q0.5"` the 0.5th. Anything else raises.
+- `legends` measures each legend's bounding box so stacked legends never overlap on
   compact figure heights, and `heatmap(frame=True)` / `annotation(kind="bar")` hide ticks
   on shared y-axes without wiping `group_labels`.
 - `plot(widths=)` rejects NaN and infinite factors; `heatmap` and `annotation` validate
@@ -82,7 +89,11 @@ Review fixes. Behaviour changes are marked **(breaking)**.
   middle bin instead of repeating 1.0 on three bins.
 - `subtract` and `log2_ratio` also compare the column count.
 - With `center=` and only one of `vmin` or `vmax`, the other bound mirrors it around
-  the centre instead of coming from the data quantile.
+  the centre instead of coming from the data quantile. A bound on the wrong side of an
+  explicit `center` raises (it used to be clamped to the centre).
+- The automatic `center=0` of differential matrices gives way to a one-sided bound:
+  `vmin >= 0` or `vmax <= 0` draws a plain linear scale, so `plot(..., vmin=0)` works
+  with a ratio column next to signal columns.
 - `palette` takes a Colormap object and raises on an empty list. `limits` takes a single
   matrix and raises on none. `plot` raises on empty `mats` or malformed `shared`.
   `hclust(k=0)` raises. An unnamed Series annotation no longer gets the label "0".

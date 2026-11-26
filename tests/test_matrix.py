@@ -285,372 +285,162 @@ def test_zscore_with_all_nan_rows_does_not_warn():
 
 
 # ---------------------------------------------------------------------------
-# M1: Zero-overlap guard (F02), strict .iloc/.loc (F13), interchange (F22),
-#     and dataclass/static contract (F23)
+# Region identifiers, alignment and the .loc / .iloc contract
 # ---------------------------------------------------------------------------
+def _ids_mat(region_index, values=None, n_bins=10):
+    n = len(region_index)
+    vals = np.ones((n, n_bins)) if values is None else values
+    return eh.NormalizedMatrix(vals, region_index=region_index, upstream=50, downstream=50, bin_size=10)
+
+
+def test_region_index_rejects_missing_and_boolean_identifiers():
+    for bad in [
+        pd.Index(["a", None], dtype=object),
+        pd.Index(["a", np.nan], dtype=object),
+        pd.Index([1.0, np.nan]),
+        pd.Index([1, pd.NA], dtype="Int64"),
+        pd.Index(["x", pd.NA], dtype="string"),
+        pd.CategoricalIndex(["a", None]),
+        pd.DatetimeIndex(["2020-01-01", pd.NaT]),
+        pd.MultiIndex.from_tuples([("chr1", 1), ("chr1", np.nan)]),
+    ]:
+        with pytest.raises(ValueError, match="missing"):
+            _ids_mat(bad)
+    for bad in [
+        pd.Index([False, True]),
+        pd.Index([False, True], dtype="boolean"),
+        pd.Index([False, True], dtype=object),
+        pd.CategoricalIndex([False, True]),
+    ]:
+        with pytest.raises(ValueError, match="boolean"):
+            _ids_mat(bad)
+    with pytest.raises(ValueError, match="unique"):
+        _ids_mat(pd.Index(["a", "a"]))
+
+    regions = pd.DataFrame({"chrom": ["chr1", "chr1"], "start": [100, 500], "end": [100, 500],
+                            "name": ["p1", None]})
+    with pytest.raises(ValueError, match="missing"):
+        eh.bins(regions, upstream=50, downstream=50, bin_size=10, id="name")
+
+
 def test_differential_ops_reject_zero_overlap_and_allow_partial_or_empty():
     a = _make_mat(n_regions=3, n_bins=10, seed=10)
-    b_range = eh.NormalizedMatrix(
-        values=np.ones((3, 10), dtype=np.float32),
-        region_index=pd.RangeIndex(3),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    b_disjoint = eh.NormalizedMatrix(
-        values=np.ones((2, 10), dtype=np.float32),
-        region_index=pd.Index(["other_0", "other_1"]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    mi2 = eh.NormalizedMatrix(
-        values=np.ones((2, 10), dtype=np.float32),
-        region_index=pd.MultiIndex.from_tuples([("chr1", 10), ("chr1", 20)]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    mi3 = eh.NormalizedMatrix(
-        values=np.ones((2, 10), dtype=np.float32),
-        region_index=pd.MultiIndex.from_tuples([("chr1", 10, "+"), ("chr1", 20, "-")]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
+    b_range = _ids_mat(pd.RangeIndex(3))
+    b_disjoint = _ids_mat(pd.Index(["other_0", "other_1"]))
+    mi2 = _ids_mat(pd.MultiIndex.from_tuples([("chr1", 10), ("chr1", 20)]))
+    mi3 = _ids_mat(pd.MultiIndex.from_tuples([("chr1", 10, "+"), ("chr1", 20, "-")]))
 
-    for left, right in [(a, b_range), (a, b_disjoint), (mi2, b_range), (mi2, mi3)]:
+    # mi2 vs mi3: pandas would match the deeper MultiIndex by prefix
+    for left, right in [(a, b_range), (a, b_disjoint), (mi2, b_range), (mi2, mi3), (mi3, mi2)]:
         with pytest.raises(ValueError, match="shares no region identifiers with"):
             left.subtract(right)
         with pytest.raises(ValueError, match="shares no region identifiers with"):
             left.log2_ratio(right)
 
     # Partial overlap aligns shared IDs and leaves unmatched rows as NaN
-    b_partial = eh.NormalizedMatrix(
-        values=np.full((2, 10), 2.0, dtype=np.float32),
-        region_index=pd.Index(["peak_1", "unseen"]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
+    b_partial = _ids_mat(pd.Index(["peak_1", "unseen"]), values=np.full((2, 10), 2.0))
     diff = a.subtract(b_partial)
     np.testing.assert_allclose(diff.values[1], a.values[1] - 2.0)
     assert np.isnan(diff.values[0]).all() and np.isnan(diff.values[2]).all()
-
     lfc = a.log2_ratio(b_partial, pseudocount=1.0)
     np.testing.assert_allclose(lfc.values[1], np.log2((a.values[1] + 1.0) / 3.0), rtol=1e-5)
-    assert np.isnan(lfc.values[0]).all() and np.isnan(lfc.values[2]).all()
+
+    # Equal labels in another dtype still align (object ints vs int64)
+    obj = _ids_mat(pd.Index([0, 1, 2], dtype=object), values=np.full((3, 10), 2.0))
+    np.testing.assert_allclose(_ids_mat(pd.RangeIndex(3)).subtract(obj).values, -1.0)
 
     # 0-row inputs remain allowed on either or both sides
     assert a.iloc[:0].subtract(b_disjoint).shape == (0, 10)
-    assert a.iloc[:0].log2_ratio(b_disjoint).shape == (0, 10)
-    empty_rhs_sub = a.subtract(b_disjoint.iloc[:0])
-    assert empty_rhs_sub.shape == (3, 10) and np.isnan(empty_rhs_sub.values).all()
-    empty_rhs_lfc = a.log2_ratio(b_disjoint.iloc[:0])
-    assert empty_rhs_lfc.shape == (3, 10) and np.isnan(empty_rhs_lfc.values).all()
-    assert a.iloc[:0].subtract(b_disjoint.iloc[:0]).shape == (0, 10)
+    empty_rhs = a.subtract(b_disjoint.iloc[:0])
+    assert empty_rhs.shape == (3, 10) and np.isnan(empty_rhs.values).all()
 
-    # Direct reindex remains permissive even with zero overlap, including tuple/ndarray targets
+    # Direct reindex stays permissive, including MultiIndex depth mismatches
     for target in (["unseen_0", "unseen_1"], ("unseen_0", "unseen_1"), np.array(["u0", "u1"])):
-        reindexed = a.reindex(target)
-        assert reindexed.shape == (2, 10)
-        assert np.isnan(reindexed.values).all()
-
-    # Cross-dtype numeric vs boolean & disjoint NA-bearing indices also raise ValueError
-    m_range = eh.NormalizedMatrix(np.ones((2, 10)), upstream=50, downstream=50, bin_size=10)
-    m_int64 = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index([0, 1], dtype="Int64"), upstream=50, downstream=50, bin_size=10
-    )
-    m_obj_int = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index([0, 1], dtype=object), upstream=50, downstream=50, bin_size=10
-    )
-    m_cat_int = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.CategoricalIndex([0, 1]), upstream=50, downstream=50, bin_size=10
-    )
-    bool_mats = [
-        eh.NormalizedMatrix(
-            np.full((2, 10), 2.0), region_index=pd.Index([False, True], dtype=bool), upstream=50, downstream=50, bin_size=10
-        ),
-        eh.NormalizedMatrix(
-            np.full((2, 10), 2.0), region_index=pd.Index([False, True], dtype="boolean"), upstream=50, downstream=50, bin_size=10
-        ),
-        eh.NormalizedMatrix(
-            np.full((2, 10), 2.0), region_index=pd.Index([False, True], dtype=object), upstream=50, downstream=50, bin_size=10
-        ),
-        eh.NormalizedMatrix(
-            np.full((2, 10), 2.0), region_index=pd.CategoricalIndex([False, True]), upstream=50, downstream=50, bin_size=10
-        ),
-    ]
-    for num_m in (m_range, m_int64, m_obj_int, m_cat_int):
-        for bool_m in bool_mats:
-            with pytest.raises(ValueError, match="shares no region identifiers with"):
-                num_m.subtract(bool_m)
-            with pytest.raises(ValueError, match="shares no region identifiers with"):
-                bool_m.log2_ratio(num_m)
-
-    m_str_na = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index(["x", pd.NA], dtype="string"), upstream=50, downstream=50, bin_size=10
-    )
-    m_str_na2 = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index(["y", pd.NA], dtype="string"), upstream=50, downstream=50, bin_size=10
-    )
-    m_f64_nan = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index([9.0, np.nan], dtype="float64"), upstream=50, downstream=50, bin_size=10
-    )
-    m_obj_none1 = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index(["a", None], dtype=object), upstream=50, downstream=50, bin_size=10
-    )
-    m_obj_none2 = eh.NormalizedMatrix(
-        np.ones((2, 10)), region_index=pd.Index(["b", None], dtype=object), upstream=50, downstream=50, bin_size=10
-    )
-    for na_left, na_right in [
-        (m_str_na, m_f64_nan),
-        (m_str_na, m_str_na2),
-        (m_obj_none1, m_obj_none2),
-    ]:
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            na_left.subtract(na_right)
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            na_left.log2_ratio(na_right)
-
-    # MultiIndex level mismatch in direct reindex returns all-NaN without AssertionError or prefix match
-    r_3to2 = mi3.reindex(mi2.region_index)
-    assert r_3to2.shape == (2, 10) and np.isnan(r_3to2.values).all()
-    r_2to3 = mi2.reindex(mi3.region_index)
-    assert r_2to3.shape == (2, 10) and np.isnan(r_2to3.values).all()
-    tup3 = pd.Index([("chr1", 10, "+"), ("chr1", 20, "-")], tupleize_cols=False)
-    assert np.isnan(mi2.reindex(tup3).values).all()
+        assert np.isnan(a.reindex(target).values).all()
+    assert np.isnan(mi3.reindex(mi2.region_index).values).all()
+    assert np.isnan(mi2.reindex(mi3.region_index).values).all()
 
 
-def test_iloc_and_loc_reject_2d_tuples_and_multidim_arrays():
+def test_loc_contract():
     mat = _make_mat(n_regions=4, n_bins=10)
+    assert list(mat.loc["peak_2"].region_index) == ["peak_2"]
+    assert list(mat.loc[["peak_3", "peak_0"]].region_index) == ["peak_3", "peak_0"]
+    assert list(mat.loc["peak_1":"peak_2"].region_index) == ["peak_1", "peak_2"]
+    assert list(mat.loc[(x for x in ["peak_1"])].region_index) == ["peak_1"]
+    with pytest.raises(KeyError, match="not found"):
+        _ = mat.loc[["peak_0", "nope"]]
+    with pytest.raises(KeyError):
+        _ = mat.loc["nope"]
 
-    for bad_tuple in [(0, 0), (slice(None), slice(None)), (0,), ()]:
+    # Masks: positional for arrays/lists, by label for a boolean Series
+    for mask in [np.array([True, False, True, False]), [True, False, True, False],
+                 pd.array([True, False, True, False], dtype="boolean")]:
+        assert list(mat.loc[mask].region_index) == ["peak_0", "peak_2"]
+    s = pd.Series([True, False, False, True], index=["peak_3", "peak_2", "peak_1", "peak_0"])
+    assert list(mat.loc[s].region_index) == ["peak_0", "peak_3"]
+    with pytest.raises(KeyError, match="Boolean Series index"):
+        _ = mat.loc[pd.Series([True] * 4)]
+    with pytest.raises(ValueError, match="NA"):
+        _ = mat.loc[[True, None, False, True]]
+    with pytest.raises(ValueError, match="length"):
+        _ = mat.loc[[True, False]]
+
+    for bad in [("peak_0", "peak_1"), np.array([["peak_0"]])]:
         with pytest.raises(IndexError):
-            _ = mat.iloc[bad_tuple]
-
-    for bad_loc_tuple in [("peak_0", "peak_1"), ("peak_0", slice(None)), ("peak_0",), ()]:
-        with pytest.raises(IndexError):
-            _ = mat.loc[bad_loc_tuple]
-
-    with pytest.raises(TypeError):
-        _ = mat.loc[pd.DataFrame({"x": [True, False, True, False]})]
-    for bad_loc_arr in [
-        np.array([["peak_0"]]),
-        np.array([[True, False, True, False]]),
-        np.array(True),
-    ]:
-        with pytest.raises(IndexError):
-            _ = mat.loc[bad_loc_arr]
-
-    for bad_iloc_container in [
-        np.array([[0, 1]]),
-        np.array([[True, False, True, False]]),
-        np.array(0),
-        pd.DataFrame({"x": [0, 1]}),
-        pd.MultiIndex.from_tuples([("a", 0), ("b", 1)]),
-        {"a": 0},
-        {0, 1},
-        frozenset([0, 1]),
-        b"01",
-        bytearray(b"01"),
-    ]:
+            _ = mat.loc[bad]
+    for bad in [{"peak_0"}, {"peak_0": 1}, ..., pd.DataFrame({"x": [True] * 4}), [["peak_0"]]]:
         with pytest.raises(TypeError):
-            _ = mat.iloc[bad_iloc_container]
+            _ = mat.loc[bad]
+
+    # True would hash-match 1 on an integer index; region IDs are never booleans
+    ints = _ids_mat(pd.Index([0, 1], dtype=object))
+    with pytest.raises(KeyError):
+        _ = ints.loc[True]
+    assert list(ints.loc[1].region_index) == [1]
+
+    # A MultiIndex row is selected by its full tuple
+    mi = _ids_mat(pd.MultiIndex.from_tuples([("chr1", 10), ("chr1", 20)]))
+    assert list(mi.loc[("chr1", 20)].region_index) == [("chr1", 20)]
+    assert list(mi.loc[[("chr1", 20), ("chr1", 10)]].region_index) == [("chr1", 20), ("chr1", 10)]
+
+    # Non-string scalar labels, and no containment match on an IntervalIndex
+    iv = _ids_mat(pd.IntervalIndex.from_tuples([(0, 100), (100, 200)]))
+    assert iv.loc[pd.Interval(0, 100)].n_regions == 1
+    with pytest.raises(KeyError):
+        _ = iv.loc[50]
+    assert np.isnan(iv.reindex([50]).values).all()
+    ts = _ids_mat(pd.DatetimeIndex(["2020-01-01", "2020-01-02"]))
+    assert ts.loc[pd.Timestamp("2020-01-02")].n_regions == 1
 
 
-def test_iloc_and_loc_strict_scalar_slice_mask_and_sequence_validation():
+def test_iloc_contract():
     mat = _make_mat(n_regions=4, n_bins=10)
-
-    # Scalar rejections in iloc
-    for bad_scalar in [
-        True,
-        False,
-        np.bool_(True),
-        "2",
-        b"2",
-        1.9,
-        1.0,
-        np.float64(1.0),
-        np.nan,
-        None,
-        ...,
-        pd.NA,
-    ]:
-        with pytest.raises(TypeError):
-            _ = mat.iloc[bad_scalar]
-
-    # Valid scalar integers & out-of-bounds IndexError (including uint64 >= 2**63)
-    assert list(mat.iloc[0].region_index) == ["peak_0"]
     assert list(mat.iloc[-1].region_index) == ["peak_3"]
-    assert list(mat.iloc[np.int64(-2)].region_index) == ["peak_2"]
     assert list(mat.iloc[np.uint8(1)].region_index) == ["peak_1"]
-    for oob in [4, -5, 10**30, -(10**30), np.uint64(1 << 63), np.uint64((1 << 64) - 1)]:
+    assert list(mat.iloc[1:3].region_index) == ["peak_1", "peak_2"]
+    for idx in [[3, 0, -2], np.array([3, 0, 2]), pd.Index([3, 0, 2]), range(3, -1, -3),
+                (i for i in [3, 0])]:
+        assert mat.iloc[idx].region_index[0] == "peak_3"
+    for empty in [[], range(0), np.array([], dtype=int)]:
+        assert mat.iloc[empty].shape == (0, 10)
+    for mask in [[True, False, True, False], np.array([True, False, True, False]),
+                 pd.Series([True, False, True, False], index=list("wxyz"))]:
+        assert list(mat.iloc[mask].region_index) == ["peak_0", "peak_2"]
+
+    for oob in [4, -5, 10**30, [0, 4], np.array([1 << 63], dtype=np.uint64), range(0, 10**30)]:
         with pytest.raises(IndexError):
             _ = mat.iloc[oob]
-
-    # Slice bound validation
-    for bad_slice in [
-        slice("0", "2"),
-        slice(0, 1.5),
-        slice(0, True),
-        slice(False, 2),
-        slice(0, 2, True),
-    ]:
+    for bad in [True, np.bool_(False), "2", 1.0, None, slice(0, 1.5), slice(0, True),
+                [1.0], ["2"], [0, True], np.array(["2"]), pd.Series([0, pd.NA], dtype="Int64"),
+                {0, 1}, {"a": 0}, b"01", pd.MultiIndex.from_tuples([("a", 0)])]:
         with pytest.raises(TypeError):
-            _ = mat.iloc[bad_slice]
-    assert list(mat.iloc[1:3].region_index) == ["peak_1", "peak_2"]
-    assert mat.iloc[:0].shape == (0, 10)
-
-    # 1D boolean masks across container types
-    for good_mask in [
-        np.array([True, False, True, False]),
-        pd.Series([True, False, True, False], index=["x", "y", "z", "w"]),
-        pd.Index([True, False, True, False]),
-        pd.array([True, False, True, False], dtype="boolean"),
-        [True, False, True, False],
-        pd.Categorical([True, False, True, False]),
-        np.array([True, False, True, False], dtype=object),
-    ]:
-        assert list(mat.iloc[good_mask].region_index) == ["peak_0", "peak_2"]
-
-    # NA in boolean masks -> ValueError in both iloc and loc
-    for na_mask in [
-        pd.Series([True, pd.NA, False, True], index=mat.region_index, dtype="boolean"),
-        pd.array([True, pd.NA, False, True], dtype="boolean"),
-        [True, pd.NA, False, True],
-        [True, None, False, True],
-        [True, np.nan, False, True],
-        np.array([True, None, False, True], dtype=object),
-        pd.Categorical([True, None, False, True], categories=[True, False]),
-    ]:
-        with pytest.raises(ValueError, match="Boolean mask cannot contain NA"):
-            _ = mat.iloc[na_mask]
-        with pytest.raises(ValueError, match="Boolean mask cannot contain NA"):
-            _ = mat.loc[na_mask]
-
-    # Wrong-length boolean masks -> ValueError
-    for short_mask in [
-        [True, False],
-        pd.Series([True, False]),
-        pd.Categorical([True, False]),
-    ]:
-        with pytest.raises(ValueError, match="Boolean mask length"):
-            _ = mat.iloc[short_mask]
-        with pytest.raises(ValueError, match="Boolean mask length"):
-            _ = mat.loc[short_mask]
-
-    # Empty & valid integer sequences/iterators/arrays
-    for empty_idx in [
-        [],
-        range(0),
-        np.array([], dtype=int),
-        pd.Index([], dtype=int),
-        pd.Series([], dtype=int),
-    ]:
-        assert mat.iloc[empty_idx].shape == (0, 10)
-
-    for int_idx in [
-        [3, 0, -2],
-        range(3, 0, -2),
-        (i for i in [3, 1]),
-        np.array([3, 1]),
-        pd.Index([3, 1]),
-        pd.Series([3, 1], dtype="Int64"),
-        pd.Categorical([3, 1]),
-    ]:
-        sub = mat.iloc[int_idx]
-        assert sub.n_regions >= 2
-        assert sub.region_index[0] == "peak_3"
-
-    # Non-integer, mixed, and NA-integer sequences -> TypeError
-    for bad_seq in [
-        [0, True],
-        [True, 0],
-        ["2"],
-        [1.9],
-        [1.0],
-        [None],
-        [[0, 1]],
-        np.array([], dtype=float),
-        np.array(["2"]),
-        np.array([1.0]),
-        np.array([0, True], dtype=object),
-        pd.Index(["peak_0"]),
-        pd.Series([0, pd.NA], dtype="Int64"),
-        pd.Series([0, pd.NA], dtype="UInt64"),
-        pd.Index([0, pd.NA], dtype="Int64"),
-        pd.Categorical([0, None], categories=[0, 1]),
-        (str(i) for i in range(2)),
-    ]:
-        with pytest.raises(TypeError):
-            _ = mat.iloc[bad_seq]
-
-    # Out-of-bounds uint64 >= 2**63 sequences/arrays/Series and huge range -> IndexError
-    for oob_seq in [
-        [np.uint64(1 << 63)],
-        np.array([1 << 63], dtype=np.uint64),
-        pd.Series([1 << 63], dtype="UInt64"),
-        pd.Index([1 << 63], dtype="uint64"),
-        [10**30],
-        (10**30 for _ in range(1)),
-        range(10**30, 10**30 + 1),
-        range(0, 10**30),
-        range(0, -(10**30), -1),
-    ]:
-        with pytest.raises(IndexError):
-            _ = mat.iloc[oob_seq]
-    assert mat.iloc[range(10**30, 10**30)].shape == (0, 10)
-
-    # Boolean generators / non-list iterables in .loc across string, object-int, and bool indices
-    from collections import UserList, deque
-
-    assert list(mat.loc[(i % 2 == 0 for i in range(4))].region_index) == ["peak_0", "peak_2"]
-    assert list(mat.loc[deque([False, True, False, True])].region_index) == ["peak_1", "peak_3"]
-    assert list(mat.loc[UserList([True, False, False, True])].region_index) == ["peak_0", "peak_3"]
-
-    m_obj = eh.NormalizedMatrix(
-        np.ones((4, 10)),
-        region_index=pd.Index([0, 1, 2, 3], dtype=object),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    with pytest.raises(ValueError, match="Boolean mask length"):
-        _ = m_obj.loc[(b for b in [True, False])]
-    with pytest.raises(ValueError, match="Boolean mask cannot contain NA"):
-        _ = m_obj.loc[(x for x in [True, pd.NA, False, True])]
-
-    m_bool_idx = eh.NormalizedMatrix(
-        np.ones((2, 10)),
-        region_index=pd.Index([False, True], dtype=bool),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    assert list(m_bool_idx.loc[(b for b in [False, True])].region_index) == [True]
-
-    # MultiIndex boolean Series with mismatched nlevels raises KeyError instead of AssertionError
-    mi2 = eh.NormalizedMatrix(
-        np.ones((2, 10)),
-        region_index=pd.MultiIndex.from_tuples([("a", 0), ("b", 1)]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    mi3 = eh.NormalizedMatrix(
-        np.ones((2, 10)),
-        region_index=pd.MultiIndex.from_tuples([("a", 0, "+"), ("b", 1, "-")]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    s_mi3 = pd.Series([True, False], index=mi3.region_index)
-    s_mi2 = pd.Series([True, False], index=mi2.region_index)
-    with pytest.raises(KeyError, match="Boolean Series index"):
-        _ = mi2.loc[s_mi3]
-    with pytest.raises(KeyError, match="Boolean Series index"):
-        _ = mi3.loc[s_mi2]
+            _ = mat.iloc[bad]
+    with pytest.raises(IndexError):
+        _ = mat.iloc[(0, 0)]
+    with pytest.raises(ValueError, match="length"):
+        _ = mat.iloc[[True, False]]
+    with pytest.raises(ValueError, match="NA"):
+        _ = mat.iloc[pd.array([True, pd.NA, False, True], dtype="boolean")]
 
 
 def test_interchange_preserves_region_index_name_and_legacy_compat():
@@ -798,249 +588,3 @@ def test_matrix_dataclass_init_and_static_contract():
     assert list(unpickled.region_index) == ["r0", "r1"] and unpickled.name == "ChIP"
     copied = copy.deepcopy(pos_mat)
     assert list(copied.region_index) == ["r0", "r1"]
-
-
-def test_categorical_nan_and_single_row_nat_alignment():
-    # Disjoint CategoricalIndex with NaN vs Int64(pd.NA) / UInt64(pd.NA) / boolean(pd.NA) / object(None)
-    m_cat_disjoint = eh.NormalizedMatrix(
-        np.full((2, 10), 10.0),
-        region_index=pd.CategoricalIndex([9, np.nan], categories=[1, 2, 9]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_i64_na = eh.NormalizedMatrix(
-        np.full((2, 10), 3.0),
-        region_index=pd.Index([2, pd.NA], dtype="Int64"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_u64_na = eh.NormalizedMatrix(
-        np.full((2, 10), 3.0),
-        region_index=pd.Index([2, pd.NA], dtype="UInt64"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_bool_na = eh.NormalizedMatrix(
-        np.full((2, 10), 3.0),
-        region_index=pd.Index([True, pd.NA], dtype="boolean"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_obj_disjoint = eh.NormalizedMatrix(
-        np.full((2, 10), 3.0),
-        region_index=pd.Index([2, None], dtype=object),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    for other in (m_i64_na, m_u64_na, m_bool_na, m_obj_disjoint):
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            m_cat_disjoint.subtract(other)
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            other.log2_ratio(m_cat_disjoint)
-
-    # Direct reindex never raises KeyError: nan; incompatible or NA-free sources produce all-NaN
-    r_i64_to_cat = m_i64_na.reindex(m_cat_disjoint.region_index)
-    assert np.isnan(r_i64_to_cat.values[0]).all()
-    np.testing.assert_allclose(r_i64_to_cat.values[1], 3.0)
-    assert np.isnan(m_bool_na.reindex(m_cat_disjoint.region_index).values).all()
-    m_i64_no_na = eh.NormalizedMatrix(
-        np.full((2, 10), 3.0),
-        region_index=pd.Index([2, 5], dtype="Int64"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    assert np.isnan(m_i64_no_na.reindex(m_cat_disjoint.region_index).values).all()
-
-    # Partial overlap on valid region 1 with NaN / pd.NA / None succeeds in both directions
-    m_cat_overlap = eh.NormalizedMatrix(
-        np.array([[10.0] * 10, [20.0] * 10]),
-        region_index=pd.CategoricalIndex([1, np.nan], categories=[1, 2, 9]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_i64_perm = eh.NormalizedMatrix(
-        np.array([[99.0] * 10, [3.0] * 10]),
-        region_index=pd.Index([pd.NA, 1], dtype="Int64"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_obj_none = eh.NormalizedMatrix(
-        np.array([[4.0] * 10, [88.0] * 10]),
-        region_index=pd.Index([1, None], dtype=object),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-
-    diff_ci = m_cat_overlap.subtract(m_i64_perm)
-    np.testing.assert_allclose(diff_ci.values[0], 7.0)
-    np.testing.assert_allclose(diff_ci.values[1], -79.0)
-    diff_ic = m_i64_perm.subtract(m_cat_overlap)
-    np.testing.assert_allclose(diff_ic.values[0], 79.0)
-    np.testing.assert_allclose(diff_ic.values[1], -7.0)
-
-    diff_co = m_cat_overlap.subtract(m_obj_none)
-    np.testing.assert_allclose(diff_co.values[0], 6.0)
-    np.testing.assert_allclose(diff_co.values[1], -68.0)
-    diff_oc = m_obj_none.subtract(m_cat_overlap)
-    np.testing.assert_allclose(diff_oc.values[0], -6.0)
-    np.testing.assert_allclose(diff_oc.values[1], 68.0)
-
-    np.testing.assert_allclose(m_i64_perm.reindex(m_cat_overlap.region_index).values[0], 3.0)
-    np.testing.assert_allclose(m_cat_overlap.reindex(m_i64_perm.region_index).values[1], 10.0)
-    np.testing.assert_allclose(m_obj_none.reindex(m_cat_overlap.region_index).values[0], 4.0)
-    np.testing.assert_allclose(m_cat_overlap.reindex(m_obj_none.region_index).values[0], 10.0)
-
-    s_i64 = pd.Series([False, True], index=pd.Index([pd.NA, 1], dtype="Int64"))
-    s_obj = pd.Series([True, False], index=pd.Index([1, None], dtype=object))
-    s_cat = pd.Series([True, False], index=m_cat_overlap.region_index)
-    assert list(m_cat_overlap.loc[s_i64].region_index) == [1]
-    assert list(m_cat_overlap.loc[s_obj].region_index) == [1]
-    assert list(m_i64_perm.loc[s_cat].region_index) == [1]
-    assert list(m_obj_none.loc[s_cat].region_index) == [1]
-
-    # 1-row float64([NaN]) vs DatetimeIndex([NaT]) and TimedeltaIndex([NaT]) must raise ValueError
-    m_f64_1 = eh.NormalizedMatrix(
-        np.full((1, 10), 5.0),
-        region_index=pd.Index([np.nan], dtype="float64"),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_dt_1 = eh.NormalizedMatrix(
-        np.full((1, 10), 2.0),
-        region_index=pd.DatetimeIndex([pd.NaT]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_td_1 = eh.NormalizedMatrix(
-        np.full((1, 10), 2.0),
-        region_index=pd.TimedeltaIndex([pd.NaT]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    for m_temporal in (m_dt_1, m_td_1):
-        assert np.isnan(m_temporal.reindex(m_f64_1.region_index).values).all()
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            m_f64_1.subtract(m_temporal)
-        with pytest.raises(ValueError, match="shares no region identifiers with"):
-            m_temporal.log2_ratio(m_f64_1)
-
-
-def test_loc_rejects_unordered_containers_and_handles_exotic_scalars():
-    class _RegionID:
-        def __init__(self, label: str) -> None:
-            self.label = label
-
-        def __hash__(self) -> int:
-            return hash(("_RegionID", self.label))
-
-        def __eq__(self, other: object) -> bool:
-            return isinstance(other, _RegionID) and self.label == other.label
-
-    class _Unhashable:
-        __hash__ = None  # type: ignore[assignment]
-
-    m2 = eh.NormalizedMatrix(
-        np.array([[1.0] * 10, [2.0] * 10]),
-        region_index=["r0", "r1"],
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    for bad_key in [
-        {True, False},
-        frozenset({True, False}),
-        {"r0"},
-        {"r0": 999},
-        ...,
-        bytearray(b"r0"),
-        memoryview(b"r0"),
-        _Unhashable(),
-        [_Unhashable()],
-        [["r0"]],
-    ]:
-        with pytest.raises(TypeError):
-            _ = m2.loc[bad_key]
-
-    # Non-NumPy scalar labels: Interval, Timestamp, Timedelta, Period, NaT, custom hashable object
-    iv0, iv1, iv_miss = pd.Interval(0, 100), pd.Interval(100, 200), pd.Interval(200, 300)
-    ts0, ts1, ts_miss = (
-        pd.Timestamp("2020-01-01"),
-        pd.Timestamp("2020-01-02"),
-        pd.Timestamp("2025-01-01"),
-    )
-    td0, td1, td_miss = pd.Timedelta("1D"), pd.Timedelta("2D"), pd.Timedelta("9D")
-    p0, p1, p_miss = (
-        pd.Period("2020-01", freq="M"),
-        pd.Period("2020-02", freq="M"),
-        pd.Period("2025-01", freq="M"),
-    )
-    c0, c1, c_miss = _RegionID("r0"), _RegionID("r1"), _RegionID("r9")
-
-    for idx_vals, hit_key, miss_key in [
-        (pd.IntervalIndex([iv0, iv1]), iv0, iv_miss),
-        (pd.DatetimeIndex([ts0, ts1]), ts0, ts_miss),
-        (pd.TimedeltaIndex([td0, td1]), td0, td_miss),
-        (pd.PeriodIndex([p0, p1], freq="M"), p0, p_miss),
-        (pd.Index([c0, c1], dtype=object), c0, c_miss),
-    ]:
-        mat_s = eh.NormalizedMatrix(
-            np.array([[10.0] * 10, [20.0] * 10]),
-            region_index=idx_vals,
-            upstream=50,
-            downstream=50,
-            bin_size=10,
-        )
-        selected = mat_s.loc[hit_key]
-        assert selected.shape == (1, 10)
-        np.testing.assert_allclose(selected.values, 10.0)
-        with pytest.raises(KeyError):
-            _ = mat_s.loc[miss_key]
-
-    m_dt_nat = eh.NormalizedMatrix(
-        np.array([[10.0] * 10, [20.0] * 10]),
-        region_index=pd.DatetimeIndex([ts0, pd.NaT]),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    np.testing.assert_allclose(m_dt_nat.loc[pd.NaT].values, 20.0)
-    with pytest.raises(KeyError):
-        _ = m_dt_nat.loc[np.nan]
-
-    # Scalar bool vs int hash collision on dtype=object region_index must raise KeyError
-    m_obj_int = eh.NormalizedMatrix(
-        np.array([[10.0] * 10, [20.0] * 10]),
-        region_index=pd.Index([0, 1], dtype=object),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    m_obj_bool = eh.NormalizedMatrix(
-        np.array([[10.0] * 10, [20.0] * 10]),
-        region_index=pd.Index([False, True], dtype=object),
-        upstream=50,
-        downstream=50,
-        bin_size=10,
-    )
-    for bool_k in (True, False, np.bool_(True), np.bool_(False)):
-        with pytest.raises(KeyError):
-            _ = m_obj_int.loc[bool_k]
-    for int_k in (0, 1, 1.0, np.int64(1)):
-        with pytest.raises(KeyError):
-            _ = m_obj_bool.loc[int_k]
-    assert list(m_obj_int.loc[1].region_index) == [1]
-    assert list(m_obj_bool.loc[True].region_index) == [True]
-
-

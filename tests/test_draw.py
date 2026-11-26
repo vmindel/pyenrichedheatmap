@@ -530,3 +530,68 @@ def test_plot_vmin_shared_overrides_multi_strip_palettes_and_annotation_kinds():
     assert num_im.norm.vmin == 0.0 and num_im.norm.vmax == 10.0
     plt.close(fig2)
 
+
+
+def test_differential_auto_centre_yields_to_one_sided_bounds():
+    import matplotlib.colors as mcolors
+
+    a, b = _mat(name="WT"), _mat(seed=2, name="KO")
+    d = b.log2_ratio(a)
+    fig, ax = plt.subplots()
+    assert isinstance(eh.heatmap(d, ax).norm, mcolors.TwoSlopeNorm)
+    # vmax alone still mirrors around the automatic centre
+    norm = eh.heatmap(d, ax, vmax=2.0).norm
+    assert isinstance(norm, mcolors.TwoSlopeNorm) and norm.vmin == pytest.approx(-2.0)
+    # A bound 0 cannot sit inside asks for a one-sided scale instead of raising
+    norm = eh.heatmap(d, ax, vmin=0.1, vmax=2.0).norm
+    assert not isinstance(norm, mcolors.TwoSlopeNorm)
+    assert (norm.vmin, norm.vmax) == (pytest.approx(0.1), pytest.approx(2.0))
+    # An explicit centre still has to lie between the bounds
+    with pytest.raises(ValueError, match="strictly less than `center`"):
+        eh.heatmap(d, ax, center=0.0, vmin=0.0)
+    plt.close(fig)
+
+    # A scalar vmin=0 for signal columns no longer breaks a ratio column next to them
+    fig, grid = eh.plot({"WT": a, "KO": b, "KO/WT": d}, vmin=0.0, pyplot=False)
+    assert grid.heatmap[2].images[0].norm.vmin == 0.0
+
+
+def test_plot_annotation_palettes_follow_labels_and_kinds():
+    from matplotlib.legend import Legend
+
+    a = _mat()
+    s1 = pd.Series(["bound", "unbound"] * 20, index=a.region_index)
+    s2 = pd.Series(["unbound", "bound", "weak", "bound"] * 10, index=a.region_index)
+    s3 = pd.Series(["p", "q"] * 20, index=a.region_index)
+    fig, grid = eh.plot(a, annotations={"s1": s1, "s2": s2, "s3": s3}, pyplot=False)
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    pals = [
+        {t.get_text(): p.get_facecolor() for t, p in zip(L.get_texts(), L.get_patches(), strict=True)}
+        for L in legs
+    ]
+    # Same label, same colour on every strip; different labels never share one here
+    assert pals[0]["bound"] == pals[1]["bound"] and pals[0]["unbound"] == pals[1]["unbound"]
+    every = [c for p in pals for lbl, c in p.items() if lbl not in ("bound", "unbound")]
+    every += [pals[0]["bound"], pals[0]["unbound"]]
+    assert len(set(every)) == len(every)
+
+    # A typo in a shared {category: colour} mapping is reported as a colour error
+    with pytest.raises(ValueError, match="RGBA"):
+        eh.plot(a, annotations={"s1": s1, "s3": s3},
+                annotation_colors={"bound": "red", "unbound": "bleu"}, pyplot=False)
+    with pytest.raises(KeyError, match="unknown strip keys"):
+        eh.plot(a, annotations={"s1": s1}, annotation_colors={"s9": "Dark2"}, pyplot=False)
+
+    # Integer cluster codes as discrete categories through plot()
+    codes = pd.Series([0, 1, 2, 10] * 10, index=a.region_index)
+    fig, grid = eh.plot(a, annotations={"cl": codes}, annotation_kind={"cl": "categorical"},
+                        pyplot=False)
+    legs = [art for art in grid.heatmap[-1].artists if isinstance(art, Legend)]
+    assert [t.get_text() for t in legs[0].get_texts()] == ["0", "1", "2", "10"]
+    assert grid.colorbar[-1] is None
+    fig, grid = eh.plot(a, annotations={"cl": codes}, pyplot=False)
+    assert grid.colorbar[-1] is not None  # default: numeric strip with a colour bar
+    with pytest.raises(ValueError, match="annotation_kind"):
+        eh.plot(a, annotations={"cl": codes}, annotation_kind="bar", pyplot=False)
+    with pytest.raises(KeyError):
+        eh.plot(a, annotations={"cl": codes}, annotation_kind={"typo": "numeric"}, pyplot=False)

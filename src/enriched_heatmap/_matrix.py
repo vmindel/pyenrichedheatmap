@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import datetime
-import numbers
 import warnings
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Any, Literal
 
 import numpy as np
@@ -87,595 +84,87 @@ def _gaussian_smooth_1d_nan_aware(
     return out.astype(values.dtype, copy=False)
 
 
-_NAProfile = tuple[str, set[str], bool]
-_INDEX_LOOKUP_ERRORS = (
-    KeyError,
-    TypeError,
-    ValueError,
-    ArithmeticError,
-    AssertionError,
-    pd.errors.InvalidIndexError,
-)
+def _validate_region_index(idx: pd.Index, what: str = "`region_index`") -> None:
+    """Region identifiers must be unique, non-missing and not booleans.
 
-
-def _scalar_na_kind(val: object) -> str | None:
-    if val is pd.NaT:
-        return "nat"
-    if isinstance(val, np.datetime64) and bool(np.isnat(val)):
-        return "dt_nat"
-    if isinstance(val, np.timedelta64) and bool(np.isnat(val)):
-        return "td_nat"
-    if (
-        val is None
-        or val is pd.NA
-        or (isinstance(val, (float, np.floating)) and bool(np.isnan(val)))
-    ):
-        return "na"
-    return None
-
-
-def _is_scalar_na(val: object) -> bool:
-    return _scalar_na_kind(val) is not None
-
-
-def _is_temporal_na_kind(kind: str | None) -> bool:
-    return kind in ("nat", "dt_nat", "td_nat")
-
-
-def _ensure_hashable(val: object) -> None:
-    try:
-        hash(val)
-    except TypeError:
-        raise TypeError(
-            f"Cannot index NormalizedMatrix.loc with unhashable type {type(val).__name__}."
-        ) from None
-
-
-def _leaf_dtype(dt: Any) -> Any:
-    while isinstance(dt, (pd.CategoricalDtype, pd.SparseDtype)):
-        dt = dt.categories.dtype if isinstance(dt, pd.CategoricalDtype) else dt.subtype
-    return dt
-
-
-def _dtype_domain(dt: Any) -> str:
-    leaf = _leaf_dtype(dt)
-    if pd.api.types.is_object_dtype(leaf):
-        return "object"
-    if pd.api.types.is_bool_dtype(leaf):
-        return "bool"
-    if pd.api.types.is_numeric_dtype(leaf):
-        return "numeric"
-    if pd.api.types.is_string_dtype(leaf):
-        return "string"
-    if isinstance(leaf, pd.DatetimeTZDtype) or getattr(leaf, "tz", None) is not None:
-        return "datetime_tz"
-    if pd.api.types.is_datetime64_any_dtype(leaf):
-        return "datetime_naive"
-    if pd.api.types.is_timedelta64_dtype(leaf):
-        return "timedelta"
-    if isinstance(leaf, pd.PeriodDtype):
-        return f"period:{leaf}"
-    if isinstance(leaf, pd.IntervalDtype):
-        return f"interval:{leaf.closed}:{_dtype_domain(leaf.subtype)}"
-    return f"other:{leaf}"
-
-
-def _scalar_domain(val: Any) -> str:
-    if isinstance(val, (bool, np.bool_)):
-        return "bool"
-    if isinstance(val, (numbers.Number, Decimal)):
-        return "numeric"
-    if isinstance(val, str):
-        return "string"
-    if isinstance(val, (pd.Timestamp, datetime.datetime)):
-        return "datetime_tz" if val.tzinfo is not None else "datetime_naive"
-    if isinstance(val, (np.datetime64, datetime.date)):
-        return "datetime_naive"
-    if isinstance(val, (pd.Timedelta, datetime.timedelta, np.timedelta64)):
-        return "timedelta"
-    if isinstance(val, pd.Period):
-        return f"period:{pd.PeriodDtype(val.freqstr)}"
-    if isinstance(val, pd.Interval):
-        return f"interval:{val.closed}:{_scalar_domain(val.left)}"
-    if isinstance(val, bytes):
-        return "bytes"
-    if isinstance(val, tuple):
-        return "tuple"
-    return "custom"
-
-
-def _is_temporal_domain(dom: str) -> bool:
-    return dom in ("datetime_naive", "datetime_tz", "timedelta") or dom.startswith("period:")
-
-
-def _na_kind_matches_typed_domain(na_kind: str, typed_dom: str) -> bool:
-    if na_kind == "nat":
-        return _is_temporal_domain(typed_dom)
-    if na_kind == "dt_nat":
-        return typed_dom == "datetime_naive"
-    if na_kind == "td_nat":
-        return typed_dom == "timedelta"
-    return not _is_temporal_domain(typed_dom)
-
-
-def _na_kinds_compatible(ka: str, kb: str) -> bool:
-    if ka == "na" or kb == "na":
-        return ka == kb
-    if ka == "nat" or kb == "nat":
-        return True
-    return ka == kb
-
-
-def _na_profiles_compatible(pa: _NAProfile, pb: _NAProfile) -> bool:
-    kind_a, doms_a, typed_a = pa
-    kind_b, doms_b, typed_b = pb
-    if typed_a and typed_b:
-        return doms_a == doms_b
-    if typed_b and not typed_a:
-        tdom_b = next(iter(doms_b))
-        return _na_kind_matches_typed_domain(kind_a, tdom_b) and (
-            not doms_a or tdom_b in doms_a
-        )
-    if typed_a and not typed_b:
-        tdom_a = next(iter(doms_a))
-        return _na_kind_matches_typed_domain(kind_b, tdom_a) and (
-            not doms_b or tdom_a in doms_b
-        )
-    if not _na_kinds_compatible(kind_a, kind_b):
-        return False
-    if kind_a == "dt_nat" and doms_b and "datetime_naive" not in doms_b:
-        return False
-    if kind_b == "dt_nat" and doms_a and "datetime_naive" not in doms_a:
-        return False
-    if kind_a == "td_nat" and doms_b and "timedelta" not in doms_b:
-        return False
-    if kind_b == "td_nat" and doms_a and "timedelta" not in doms_a:
-        return False
-    return not (doms_a and doms_b and not (doms_a & doms_b))
-
-
-def _underlying_index_dtype(idx: pd.Index) -> Any:
-    return idx.categories.dtype if isinstance(idx, pd.CategoricalIndex) else idx.dtype
-
-
-def _is_nonbool_numeric_dtype(dt: Any) -> bool:
-    leaf = _leaf_dtype(dt)
-    return not pd.api.types.is_bool_dtype(leaf) and (
-        pd.api.types.is_integer_dtype(leaf) or pd.api.types.is_float_dtype(leaf)
-    )
-
-
-def _index_isna(idx: pd.Index) -> np.ndarray:
+    Missing identifiers cannot be matched reliably across panels, and booleans collide
+    with 0/1 under pandas' hashing (``True == 1``), so both are rejected once here. Every
+    lookup further down can then use plain pandas indexing.
+    """
+    if not idx.is_unique:
+        raise ValueError(f"{what} must contain unique region identifiers.")
     if isinstance(idx, pd.MultiIndex):
-        if len(idx) == 0 or idx.nlevels == 0:
-            return np.zeros(len(idx), dtype=bool)
-        level_na: list[np.ndarray] = []
-        for lvl in range(idx.nlevels):
-            codes = np.asarray(idx.codes[lvl])
-            lvl_idx = idx.levels[lvl]
-            if len(lvl_idx) > 0 and pd.api.types.is_object_dtype(lvl_idx.dtype):
-                lvl_mask = np.array([_is_scalar_na(x) for x in lvl_idx], dtype=bool)
-                if np.any(lvl_mask):
-                    safe_codes = np.maximum(codes, 0)
-                    level_na.append((codes < 0) | lvl_mask[safe_codes])
-                    continue
-            level_na.append(codes < 0)
-        return np.asarray(np.all(level_na, axis=0), dtype=bool)
-    return np.asarray(idx.isna(), dtype=bool)
-
-
-def _object_index_info(idx: pd.Index, na_pos: int) -> tuple[str, set[str]]:
-    if isinstance(idx, pd.CategoricalIndex):
-        doms = {_scalar_domain(v) for v in idx.categories if not _is_scalar_na(v)}
-        na_kind = "nat" if (doms and all(_is_temporal_domain(d) for d in doms)) else "na"
-        return na_kind, doms
-    raw_na = idx[na_pos]
-    na_kind = _scalar_na_kind(raw_na) or "na"
-    doms = {_scalar_domain(x) for x in idx if not _is_scalar_na(x)}
-    return na_kind, doms
-
-
-def _index_na_profile(idx: pd.Index, na_pos: int) -> _NAProfile:
-    dom = _dtype_domain(idx.dtype)
-    if dom != "object":
-        return ("nat" if _is_temporal_domain(dom) else "na", {dom}, True)
-    na_kind, doms = _object_index_info(idx, na_pos)
-    return (na_kind, doms, False)
-
-
-def _object_na_matches_domain(obj_idx: pd.Index, obj_pos: int, typed_dom: str) -> bool:
-    na_kind, doms = _object_index_info(obj_idx, obj_pos)
-    return _na_profiles_compatible(
-        (na_kind, doms, False),
-        ("nat" if _is_temporal_domain(typed_dom) else "na", {typed_dom}, True),
-    )
-
-
-def _are_na_compatible(idx_a: pd.Index, pos_a: int, idx_b: pd.Index, pos_b: int) -> bool:
-    return _na_profiles_compatible(
-        _index_na_profile(idx_a, pos_a),
-        _index_na_profile(idx_b, pos_b),
-    )
-
-
-def _has_coexisting_same_group_na(idx: pd.Index) -> bool:
-    na_positions = np.flatnonzero(_index_isna(idx))
-    if na_positions.size <= 1:
-        return False
-    na_vals = [idx[int(p)] for p in na_positions]
-    for allowed_kinds in (("na",), ("nat", "dt_nat"), ("nat", "td_nat")):
-        grp = [v for v in na_vals if _scalar_na_kind(v) in allowed_kinds]
-        if len(grp) > 1 and len(pd.Index(grp, dtype=object).unique()) > 1:
-            return True
-    return False
-
-
-def _mi_level_na_profile(lvl_idx: pd.Index, code: int) -> _NAProfile:
-    dom = _dtype_domain(lvl_idx.dtype)
-    if dom != "object":
-        return ("nat" if _is_temporal_domain(dom) else "na", {dom}, True)
-    doms = {_scalar_domain(x) for x in lvl_idx if not _is_scalar_na(x)}
-    if code >= 0 and _is_scalar_na(lvl_idx[code]):
-        na_kind = _scalar_na_kind(lvl_idx[code]) or "na"
+        missing = any(bool((np.asarray(c) < 0).any()) for c in idx.codes)
     else:
-        na_kind = "nat" if (doms and all(_is_temporal_domain(d) for d in doms)) else "na"
-    return (na_kind, doms, False)
-
-
-def _mi_rows_compatible(
-    source: pd.MultiIndex, s_row: int, target: pd.MultiIndex, t_row: int
-) -> bool:
-    for lvl in range(source.nlevels):
-        s_lvl = source.levels[lvl]
-        t_lvl = target.levels[lvl]
-        s_code = int(source.codes[lvl][s_row])
-        t_code = int(target.codes[lvl][t_row])
-        s_na = s_code < 0 or _is_scalar_na(s_lvl[s_code])
-        t_na = t_code < 0 or _is_scalar_na(t_lvl[t_code])
-        if s_na != t_na:
-            return False
-        if not s_na:
-            sv = s_lvl[s_code]
-            tv = t_lvl[t_code]
-            if (
-                isinstance(tv, (bool, np.bool_)) != isinstance(sv, (bool, np.bool_))
-                or isinstance(tv, pd.Interval) != isinstance(sv, pd.Interval)
-            ):
-                return False
-        elif not _na_profiles_compatible(
-            _mi_level_na_profile(s_lvl, s_code),
-            _mi_level_na_profile(t_lvl, t_code),
+        missing = bool(idx.hasnans)
+    if missing:
+        raise ValueError(f"{what} must not contain missing (NaN/None) region identifiers.")
+    if not isinstance(idx, pd.MultiIndex):
+        dt = idx.categories.dtype if isinstance(idx, pd.CategoricalIndex) else idx.dtype
+        if pd.api.types.is_bool_dtype(dt) or (
+            pd.api.types.is_object_dtype(dt) and pd.api.types.infer_dtype(idx) == "boolean"
         ):
-            return False
-    return True
-
-
-def _tuple_level_domains(tuples: Sequence[tuple[Any, ...]], nlevels: int) -> list[set[str]]:
-    return [
-        {_scalar_domain(t[lvl]) for t in tuples if not _is_scalar_na(t[lvl])}
-        for lvl in range(nlevels)
-    ]
-
-
-def _tuple_elem_can_match_mi_level(
-    val: Any, tup_lvl_doms: set[str], mi_lvl: pd.Index
-) -> bool:
-    lvl_dom = _dtype_domain(mi_lvl.dtype)
-    if _is_scalar_na(val):
-        tup_prof: _NAProfile = (_scalar_na_kind(val) or "na", tup_lvl_doms, False)
-        if lvl_dom != "object":
-            mi_prof: _NAProfile = (
-                "nat" if _is_temporal_domain(lvl_dom) else "na",
-                {lvl_dom},
-                True,
-            )
-            return _na_profiles_compatible(tup_prof, mi_prof)
-        mi_doms = {_scalar_domain(x) for x in mi_lvl if not _is_scalar_na(x)}
-        mi_kinds = {
-            _scalar_na_kind(x) or "na" for x in mi_lvl if _is_scalar_na(x)
-        }
-        default_kind = (
-            "nat" if (mi_doms and all(_is_temporal_domain(d) for d in mi_doms)) else "na"
-        )
-        mi_kinds.add(default_kind)
-        return any(
-            _na_profiles_compatible(tup_prof, (mk, mi_doms, False)) for mk in mi_kinds
-        )
-    if lvl_dom != "object":
-        return _scalar_domain(val) == lvl_dom
-    return True
-
-
-def _mi_row_matches_tuple(
-    mi: pd.MultiIndex,
-    mi_row: int,
-    tup: tuple[Any, ...],
-    tup_doms_per_lvl: Sequence[set[str]],
-) -> bool:
-    for lvl in range(mi.nlevels):
-        tv = tup[lvl]
-        lvl_idx = mi.levels[lvl]
-        code = int(mi.codes[lvl][mi_row])
-        mi_na = code < 0 or _is_scalar_na(lvl_idx[code])
-        tup_na = _is_scalar_na(tv)
-        if mi_na != tup_na:
-            return False
-        if not mi_na:
-            mv = lvl_idx[code]
-            if (
-                isinstance(tv, (bool, np.bool_)) != isinstance(mv, (bool, np.bool_))
-                or isinstance(tv, pd.Interval) != isinstance(mv, pd.Interval)
-            ):
-                return False
-        else:
-            tup_prof: _NAProfile = (
-                _scalar_na_kind(tv) or "na",
-                tup_doms_per_lvl[lvl],
-                False,
-            )
-            if not _na_profiles_compatible(_mi_level_na_profile(lvl_idx, code), tup_prof):
-                return False
-    return True
+            raise ValueError(f"{what} must not be boolean; use string or integer region IDs.")
 
 
 def _safe_get_indexer(source: pd.Index, target: pd.Index) -> np.ndarray:
-    n_target = len(target)
-    if n_target == 0 or len(source) == 0:
-        return np.full(n_target, -1, dtype=np.intp)
+    """Positions of ``target`` labels in ``source`` (-1 where absent), never raising.
 
-    if isinstance(source, pd.MultiIndex) and isinstance(target, pd.MultiIndex):
-        if source.nlevels != target.nlevels:
-            return np.full(n_target, -1, dtype=np.intp)
-        for lvl in range(source.nlevels):
-            sl_dom = _dtype_domain(source.levels[lvl].dtype)
-            tl_dom = _dtype_domain(target.levels[lvl].dtype)
-            if sl_dom != "object" and tl_dom != "object" and sl_dom != tl_dom:
-                return np.full(n_target, -1, dtype=np.intp)
-            if (
-                sl_dom.startswith("interval:")
-                and tl_dom == "object"
-                and not any(
-                    isinstance(x, pd.Interval) and _scalar_domain(x) == sl_dom
-                    for x in target.levels[lvl]
-                )
-            ):
-                return np.full(n_target, -1, dtype=np.intp)
-            if (
-                tl_dom.startswith("interval:")
-                and sl_dom == "object"
-                and not any(
-                    isinstance(x, pd.Interval) and _scalar_domain(x) == tl_dom
-                    for x in source.levels[lvl]
-                )
-            ):
-                return np.full(n_target, -1, dtype=np.intp)
-            sl_dt = _underlying_index_dtype(source.levels[lvl])
-            tl_dt = _underlying_index_dtype(target.levels[lvl])
-            if (pd.api.types.is_bool_dtype(sl_dt) and _is_nonbool_numeric_dtype(tl_dt)) or (
-                pd.api.types.is_bool_dtype(tl_dt) and _is_nonbool_numeric_dtype(sl_dt)
-            ):
-                return np.full(n_target, -1, dtype=np.intp)
-        try:
-            with np.errstate(invalid="ignore"):
-                indexer = np.asarray(source.get_indexer(target), dtype=np.intp)
-        except _INDEX_LOOKUP_ERRORS:
-            return np.full(n_target, -1, dtype=np.intp)
-        if np.any(indexer >= 0) and any(
-            _dtype_domain(source.levels[lvl].dtype) == "object"
-            or _dtype_domain(target.levels[lvl].dtype) == "object"
-            for lvl in range(source.nlevels)
-        ):
-            for i in np.flatnonzero(indexer >= 0):
-                if not _mi_rows_compatible(source, int(indexer[i]), target, int(i)):
-                    indexer[i] = -1
-        return indexer
-
-    if isinstance(source, pd.MultiIndex):
-        t_dt = _underlying_index_dtype(target)
-        if not pd.api.types.is_object_dtype(t_dt):
-            return np.full(n_target, -1, dtype=np.intp)
-        k = source.nlevels
-        raw_pos = [i for i, x in enumerate(target) if isinstance(x, tuple) and len(x) == k]
-        if not raw_pos:
-            return np.full(n_target, -1, dtype=np.intp)
-        all_tgt_tuples: list[tuple[Any, ...]] = [target[i] for i in raw_pos]
-        tup_doms = _tuple_level_domains(all_tgt_tuples, k)
-        valid_pos = [
-            i
-            for i in raw_pos
-            if all(
-                _tuple_elem_can_match_mi_level(target[i][lvl], tup_doms[lvl], source.levels[lvl])
-                for lvl in range(k)
-            )
-        ]
-        if not valid_pos:
-            return np.full(n_target, -1, dtype=np.intp)
-        try:
-            sub_tgt = pd.MultiIndex.from_arrays(
-                [
-                    pd.Index([target[i][lvl] for i in valid_pos], dtype=object, tupleize_cols=False)
-                    for lvl in range(k)
-                ]
-            )
-        except _INDEX_LOOKUP_ERRORS:
-            return np.full(n_target, -1, dtype=np.intp)
-        sub_hits = _safe_get_indexer(source, sub_tgt)
-        res = np.full(n_target, -1, dtype=np.intp)
-        for idx_in_valid, orig_i in enumerate(valid_pos):
-            s_hit = int(sub_hits[idx_in_valid])
-            if s_hit >= 0 and _mi_row_matches_tuple(
-                source, s_hit, target[orig_i], tup_doms
-            ):
-                res[orig_i] = s_hit
-        return res
-
-    if isinstance(target, pd.MultiIndex):
-        s_dt = _underlying_index_dtype(source)
-        if not pd.api.types.is_object_dtype(s_dt):
-            return np.full(n_target, -1, dtype=np.intp)
-        k = target.nlevels
-        raw_src = [j for j, x in enumerate(source) if isinstance(x, tuple) and len(x) == k]
-        if not raw_src:
-            return np.full(n_target, -1, dtype=np.intp)
-        all_src_tuples: list[tuple[Any, ...]] = [source[j] for j in raw_src]
-        src_doms = _tuple_level_domains(all_src_tuples, k)
-        valid_src = [
-            j
-            for j in raw_src
-            if all(
-                _tuple_elem_can_match_mi_level(source[j][lvl], src_doms[lvl], target.levels[lvl])
-                for lvl in range(k)
-            )
-        ]
-        if not valid_src:
-            return np.full(n_target, -1, dtype=np.intp)
-        try:
-            sub_src = pd.MultiIndex.from_arrays(
-                [
-                    pd.Index([source[j][lvl] for j in valid_src], dtype=object, tupleize_cols=False)
-                    for lvl in range(k)
-                ]
-            )
-        except _INDEX_LOOKUP_ERRORS:
-            return np.full(n_target, -1, dtype=np.intp)
-        if not sub_src.is_unique:
-            keep_mask = ~np.asarray(sub_src.duplicated(keep="first"), dtype=bool)
-            valid_src = [valid_src[m_i] for m_i in np.flatnonzero(keep_mask)]
-            sub_src = sub_src[keep_mask]
-        sub_idx = _safe_get_indexer(sub_src, target)
-        res = np.full(n_target, -1, dtype=np.intp)
-        for t_i in np.flatnonzero(sub_idx >= 0):
-            orig_j = valid_src[int(sub_idx[t_i])]
-            if _mi_row_matches_tuple(target, int(t_i), source[orig_j], src_doms):
-                res[int(t_i)] = orig_j
-        return res
-
-    if isinstance(target, pd.CategoricalIndex):
-        codes = np.asarray(target.codes, dtype=np.intp)
-        out = np.full(n_target, -1, dtype=np.intp)
-        valid = codes >= 0
-        if np.any(valid) and len(target.categories) > 0:
-            cat_indexer = _safe_get_indexer(source, target.categories)
-            out[valid] = cat_indexer[codes[valid]]
-        missing = codes < 0
-        if np.any(missing):
-            src_na_positions = np.flatnonzero(_index_isna(source))
-            if src_na_positions.size > 0:
-                first_miss = int(np.flatnonzero(missing)[0])
-                for si in src_na_positions:
-                    if _are_na_compatible(source, int(si), target, first_miss):
-                        out[missing] = int(si)
-                        break
-        return out
-
-    if isinstance(source, pd.CategoricalIndex):
-        src_codes = np.asarray(source.codes, dtype=np.intp)
-        out = np.full(n_target, -1, dtype=np.intp)
-        tgt_na = _index_isna(target)
-        tgt_valid = ~tgt_na
-        if np.any(tgt_valid) and len(source.categories) > 0:
-            cat_to_src = np.full(len(source.categories), -1, dtype=np.intp)
-            src_valid_pos = np.flatnonzero(src_codes >= 0)
-            if src_valid_pos.size > 0:
-                cat_to_src[src_codes[src_valid_pos]] = src_valid_pos
-            sub_target = target if not np.any(tgt_na) else target[tgt_valid]
-            cat_hits = _safe_get_indexer(source.categories, sub_target)
-            mapped = np.where(cat_hits >= 0, cat_to_src[np.maximum(cat_hits, 0)], -1)
-            out[tgt_valid] = mapped
-        if np.any(tgt_na):
-            src_na_positions = np.flatnonzero(src_codes < 0)
-            if src_na_positions.size > 0:
-                for ti in np.flatnonzero(tgt_na):
-                    for si in src_na_positions:
-                        if _are_na_compatible(source, int(si), target, int(ti)):
-                            out[int(ti)] = int(si)
-                            break
-        return out
-
-    s_dom = _dtype_domain(source.dtype)
-    t_dom = _dtype_domain(target.dtype)
-    if s_dom != "object" and t_dom != "object" and s_dom != t_dom:
-        return np.full(n_target, -1, dtype=np.intp)
-
-    tgt_na = _index_isna(target)
-    if np.any(tgt_na):
-        out = np.full(n_target, -1, dtype=np.intp)
-        tgt_valid = ~tgt_na
-        if np.any(tgt_valid):
-            out[tgt_valid] = _safe_get_indexer(source, target[tgt_valid])
-        src_na_positions = np.flatnonzero(_index_isna(source))
-        if src_na_positions.size > 0:
-            if (
-                s_dom == "object"
-                and t_dom == "object"
-                and (
-                    _has_coexisting_same_group_na(source)
-                    or _has_coexisting_same_group_na(target)
-                )
-            ):
-                try:
-                    na_hits = np.asarray(source.get_indexer(target[tgt_na]), dtype=np.intp)
-                except _INDEX_LOOKUP_ERRORS:
-                    na_hits = np.full(int(tgt_na.sum()), -1, dtype=np.intp)
-                for k_idx, ti in enumerate(np.flatnonzero(tgt_na)):
-                    hit_pos = int(na_hits[k_idx])
-                    if hit_pos >= 0 and _are_na_compatible(source, hit_pos, target, int(ti)):
-                        out[int(ti)] = hit_pos
-            else:
-                for ti in np.flatnonzero(tgt_na):
-                    for si in src_na_positions:
-                        if _are_na_compatible(source, int(si), target, int(ti)):
-                            out[int(ti)] = int(si)
-                            break
-        return out
-
-    if s_dom.startswith("interval:") and t_dom == "object":
-        iv_pos = [
-            i
-            for i, x in enumerate(target)
-            if isinstance(x, pd.Interval) and _scalar_domain(x) == s_dom
-        ]
-        if not iv_pos:
-            return np.full(n_target, -1, dtype=np.intp)
-        out_iv = np.full(n_target, -1, dtype=np.intp)
-        try:
-            sub_iv_tgt = pd.IntervalIndex([target[i] for i in iv_pos])
-            with np.errstate(invalid="ignore"):
-                hits_iv = np.asarray(source.get_indexer(sub_iv_tgt), dtype=np.intp)
-        except _INDEX_LOOKUP_ERRORS:
-            return out_iv
-        out_iv[np.asarray(iv_pos, dtype=np.intp)] = hits_iv
-        return out_iv
-    if (
-        t_dom.startswith("interval:")
-        and s_dom == "object"
-        and not any(isinstance(x, pd.Interval) and _scalar_domain(x) == t_dom for x in source)
-    ):
-        return np.full(n_target, -1, dtype=np.intp)
-
-    s_dt = _underlying_index_dtype(source)
-    t_dt = _underlying_index_dtype(target)
-    if (pd.api.types.is_bool_dtype(s_dt) and _is_nonbool_numeric_dtype(t_dt)) or (
-        pd.api.types.is_bool_dtype(t_dt) and _is_nonbool_numeric_dtype(s_dt)
-    ):
-        return np.full(n_target, -1, dtype=np.intp)
+    ``Index.get_indexer`` has three traps this guards: a MultiIndex matches a deeper
+    MultiIndex by prefix, an IntervalIndex matches numbers by containment, and some
+    incompatible index pairs raise instead of returning -1.
+    """
+    none = np.full(len(target), -1, dtype=np.intp)
+    if len(target) == 0 or len(source) == 0:
+        return none
+    s_mi, t_mi = isinstance(source, pd.MultiIndex), isinstance(target, pd.MultiIndex)
+    if s_mi and t_mi and source.nlevels != target.nlevels:
+        return none
+    if isinstance(source, pd.IntervalIndex) != isinstance(target, pd.IntervalIndex):
+        return none
     try:
-        with np.errstate(invalid="ignore"):
-            indexer = np.asarray(source.get_indexer(target), dtype=np.intp)
-    except _INDEX_LOOKUP_ERRORS:
-        return np.full(n_target, -1, dtype=np.intp)
-    if np.any(indexer >= 0) and (
-        pd.api.types.is_object_dtype(s_dt) or pd.api.types.is_object_dtype(t_dt)
+        return np.asarray(source.get_indexer(target), dtype=np.intp)
+    except (TypeError, ValueError, AssertionError, pd.errors.InvalidIndexError):
+        return none
+
+
+def _shares_labels(source: pd.Index, target: pd.Index) -> bool:
+    return source is target or bool(np.any(_safe_get_indexer(source, target) >= 0))
+
+
+def _bool_mask(key: Any, n: int) -> np.ndarray | None:
+    """Positions selected by a 1D boolean mask, or None if ``key`` is not one."""
+    dt = getattr(key, "dtype", None)
+    if isinstance(dt, pd.CategoricalDtype):
+        dt = dt.categories.dtype
+    if dt is not None and pd.api.types.is_bool_dtype(dt):
+        pass
+    elif dt is None or pd.api.types.is_object_dtype(dt):
+        if pd.api.types.infer_dtype(key, skipna=True) != "boolean":
+            return None
+    else:
+        return None
+    if bool(np.any(pd.isna(np.asarray(key, dtype=object)))):
+        raise ValueError("Boolean mask cannot contain NA / missing values.")
+    arr = np.asarray(key, dtype=bool)
+    if len(arr) != n:
+        raise ValueError(f"Boolean mask length ({len(arr)}) does not match n_regions ({n}).")
+    return np.flatnonzero(arr)
+
+
+def _as_1d_key(key: Any, what: str) -> Any:
+    """Reject containers that are not a 1D row selection; materialise iterators."""
+    if isinstance(key, tuple):
+        raise IndexError(f"NormalizedMatrix.{what} is 1D (rows only); tuple indexing is not supported.")
+    if isinstance(key, np.ndarray) and key.ndim != 1:
+        raise IndexError(f"NormalizedMatrix.{what} requires a 1D indexer, got {key.ndim}D array.")
+    if key is Ellipsis or isinstance(
+        key, (pd.DataFrame, Mapping, set, frozenset, bytes, bytearray, memoryview)
     ):
-        for i in np.flatnonzero(indexer >= 0):
-            tv = target[int(i)]
-            sv = source[int(indexer[i])]
-            if (
-                isinstance(tv, (bool, np.bool_)) != isinstance(sv, (bool, np.bool_))
-                or isinstance(tv, pd.Interval) != isinstance(sv, pd.Interval)
-            ):
-                indexer[i] = -1
-    return indexer
+        raise TypeError(f"Cannot index NormalizedMatrix.{what} with {type(key).__name__}.")
+    if not isinstance(key, (np.ndarray, pd.Index, pd.Series, pd.api.extensions.ExtensionArray, list, range)):
+        key = list(key)
+    return key
 
 
 class _MatrixLocIndexer:
@@ -685,189 +174,64 @@ class _MatrixLocIndexer:
         self._matrix = matrix
 
     def __getitem__(self, key: Any) -> NormalizedMatrix:
-        if isinstance(key, tuple):
-            raise IndexError(
-                "NormalizedMatrix.loc is 1D (rows only); tuple / multi-axis indexing is not supported."
-            )
-        if key is Ellipsis or isinstance(
-            key, (pd.DataFrame, Mapping, set, frozenset, bytearray, memoryview)
-        ):
-            raise TypeError(f"Cannot index NormalizedMatrix.loc with {type(key).__name__}.")
-        if isinstance(key, np.ndarray) and key.ndim != 1:
-            raise IndexError(
-                f"NormalizedMatrix.loc requires a 1D indexer, got {key.ndim}D array."
-            )
-
-        idx = self._matrix.region_index
-        if isinstance(key, pd.Series):
-            series_elem_dtype = (
-                key.dtype.categories.dtype
-                if isinstance(key.dtype, pd.CategoricalDtype)
-                else key.dtype
-            )
-            is_series_bool = pd.api.types.is_bool_dtype(key.dtype) or pd.api.types.is_bool_dtype(
-                series_elem_dtype
-            )
-            if not is_series_bool and pd.api.types.is_object_dtype(series_elem_dtype) and len(key) > 0:
-                vals = list(key)
-                if any(isinstance(x, (bool, np.bool_)) for x in vals) and all(
-                    isinstance(x, (bool, np.bool_)) or _is_scalar_na(x) for x in vals
-                ):
-                    is_series_bool = True
-            if is_series_bool:
-                if key.isna().any() or any(_is_scalar_na(x) for x in key):
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                if not key.index.is_unique:
-                    raise ValueError("Boolean Series index must contain unique identifiers.")
-                if len(key) != len(idx):
-                    raise ValueError(
-                        f"Boolean mask length ({len(key)}) does not match "
-                        f"n_regions ({len(idx)})."
-                    )
-                pos = _safe_get_indexer(key.index, idx)
-                if np.any(pos < 0):
-                    raise KeyError("Boolean Series index does not match `region_index`.")
-                mask = np.asarray(key.to_numpy()[pos], dtype=bool)
-                return self._matrix._subset_positions(np.flatnonzero(mask))
-
-        if isinstance(key, (np.ndarray, pd.Index, pd.api.extensions.ExtensionArray)):
-            if getattr(key, "ndim", 1) != 1:
-                raise IndexError("NormalizedMatrix.loc requires a 1D indexer.")
-            elem_dtype = (
-                key.dtype.categories.dtype
-                if isinstance(key.dtype, pd.CategoricalDtype)
-                else key.dtype
-            )
-            is_arr_bool = pd.api.types.is_bool_dtype(key.dtype) or pd.api.types.is_bool_dtype(
-                elem_dtype
-            )
-            if (
-                not is_arr_bool
-                and not isinstance(key, pd.MultiIndex)
-                and pd.api.types.is_object_dtype(elem_dtype)
-                and len(key) > 0
-            ):
-                items = list(key)
-                if any(isinstance(x, (bool, np.bool_)) for x in items) and all(
-                    isinstance(x, (bool, np.bool_)) or _is_scalar_na(x) for x in items
-                ):
-                    if any(_is_scalar_na(x) for x in items):
-                        raise ValueError("Boolean mask cannot contain NA / missing values.")
-                    is_arr_bool = True
-            if is_arr_bool:
-                if pd.isna(key).any():
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                arr = np.asarray(key, dtype=bool)
-                if len(arr) != len(idx):
-                    raise ValueError(
-                        f"Boolean mask length ({len(arr)}) does not match "
-                        f"n_regions ({len(idx)})."
-                    )
-                return self._matrix._subset_positions(np.flatnonzero(arr))
-
-        if isinstance(key, slice):
+        m = self._matrix
+        idx = m.region_index
+        if isinstance(key, tuple) and isinstance(idx, pd.MultiIndex):
+            key = [key]  # a full MultiIndex label selects one row
+        elif isinstance(key, slice):
             slc = idx.slice_indexer(key.start, key.stop, key.step)
-            positions = np.arange(*slc.indices(len(idx)), dtype=np.intp)
-            return self._matrix._subset_positions(positions)
-
-        if pd.api.types.is_scalar(key) or not isinstance(key, Iterable):
-            _ensure_hashable(key)
-            if isinstance(idx, pd.MultiIndex):
-                raise KeyError(key)
-            key_na_kind = _scalar_na_kind(key)
-            if key_na_kind is not None:
-                idx_dom = _dtype_domain(idx.dtype)
-                if idx_dom != "object" and not _na_kind_matches_typed_domain(key_na_kind, idx_dom):
-                    raise KeyError(key)
-                pos_scalar: Any = None
-                try:
-                    pos_scalar = idx.get_loc(key)
-                except _INDEX_LOOKUP_ERRORS:
-                    raise KeyError(key) from None
-                if not isinstance(pos_scalar, (int, np.integer)):
-                    raise KeyError(key)
-                pos_int = int(pos_scalar)
-                if not _index_isna(idx)[pos_int]:
-                    raise KeyError(key)
-                if idx_dom == "object":
-                    idx_na_kind, idx_doms = _object_index_info(idx, pos_int)
-                    if not _na_profiles_compatible(
-                        (idx_na_kind, idx_doms, False),
-                        (key_na_kind, set(), False),
-                    ):
-                        raise KeyError(key)
-                return self._matrix._subset_positions(np.array([pos_int], dtype=np.intp))
-
-            idx_dom = _dtype_domain(idx.dtype)
-            if idx_dom.startswith("interval:") and not isinstance(key, pd.Interval):
-                raise KeyError(key)
+            return m._subset_positions(np.arange(*slc.indices(len(idx)), dtype=np.intp))
+        elif not pd.api.types.is_list_like(key) and not isinstance(key, tuple):
+            if key is Ellipsis or isinstance(key, (bytearray, memoryview)):
+                raise TypeError(f"Cannot index NormalizedMatrix.loc with {type(key).__name__}.")
             try:
-                with np.errstate(invalid="ignore"):
-                    pos_scalar = idx.get_loc(key)
-            except _INDEX_LOOKUP_ERRORS:
-                raise KeyError(key) from None
-            if not isinstance(pos_scalar, (int, np.integer)):
+                hash(key)
+            except TypeError:
+                raise TypeError(
+                    f"Cannot index NormalizedMatrix.loc with unhashable {type(key).__name__}."
+                ) from None
+            if isinstance(idx, pd.IntervalIndex) and not isinstance(key, pd.Interval):
                 raise KeyError(key)
-            pos_int = int(pos_scalar)
-            if _index_isna(idx)[pos_int]:
+            if isinstance(key, (bool, np.bool_)):
+                raise KeyError(key)  # region IDs are never boolean; True would match 1
+            pos = idx.get_loc(key)
+            if not isinstance(pos, (int, np.integer)):
                 raise KeyError(key)
-            matched_label = idx[pos_int]
-            if (
-                isinstance(key, (bool, np.bool_)) != isinstance(matched_label, (bool, np.bool_))
-                or isinstance(key, pd.Interval) != isinstance(matched_label, pd.Interval)
-            ):
-                raise KeyError(key)
-            return self._matrix._subset_positions(np.array([pos_int], dtype=np.intp))
+            return m._subset_positions(np.array([pos], dtype=np.intp))
 
-        if not isinstance(
-            key, (pd.Series, np.ndarray, pd.Index, pd.api.extensions.ExtensionArray)
-        ):
-            seq_items = list(key)
-            if (
-                len(seq_items) > 0
-                and any(isinstance(x, (bool, np.bool_)) for x in seq_items)
-                and all(isinstance(x, (bool, np.bool_)) or _is_scalar_na(x) for x in seq_items)
-            ):
-                if any(_is_scalar_na(x) for x in seq_items):
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                arr = np.asarray(seq_items, dtype=bool)
-                if len(arr) != len(idx):
-                    raise ValueError(
-                        f"Boolean mask length ({len(arr)}) does not match "
-                        f"n_regions ({len(idx)})."
-                    )
-                return self._matrix._subset_positions(np.flatnonzero(arr))
-            for x in seq_items:
-                _ensure_hashable(x)
-            if (
-                not isinstance(idx, pd.MultiIndex)
-                and len(seq_items) > 0
-                and any(_is_temporal_na_kind(_scalar_na_kind(x)) for x in seq_items)
-            ):
-                key_idx: pd.Index = pd.Index(seq_items, dtype=object, tupleize_cols=False)
-            else:
-                key_idx = pd.Index(seq_items, tupleize_cols=isinstance(idx, pd.MultiIndex))
+        key = _as_1d_key(key, "loc")
+        if isinstance(key, pd.Series) and _bool_mask(key.to_numpy(), len(key)) is not None:
+            if not key.index.is_unique:
+                raise ValueError("Boolean Series index must contain unique identifiers.")
+            if len(key) != len(idx):
+                raise ValueError(
+                    f"Boolean mask length ({len(key)}) does not match n_regions ({len(idx)})."
+                )
+            pos = _safe_get_indexer(key.index, idx)
+            if np.any(pos < 0):
+                raise KeyError("Boolean Series index does not match `region_index`.")
+            return m._subset_positions(np.flatnonzero(np.asarray(key.to_numpy()[pos], dtype=bool)))
+        mask = _bool_mask(key, len(idx))
+        if mask is not None:
+            return m._subset_positions(mask)
+
+        if isinstance(key, pd.Index):
+            key_idx = key
         else:
-            raw_elem_dtype = (
-                key.dtype.categories.dtype
-                if isinstance(key.dtype, pd.CategoricalDtype)
-                else key.dtype
-            )
-            if isinstance(key, pd.MultiIndex) or pd.api.types.is_object_dtype(raw_elem_dtype):
-                for x in key:
-                    _ensure_hashable(x)
-            key_idx = (
-                key
-                if isinstance(key, pd.Index)
-                else pd.Index(key, tupleize_cols=isinstance(idx, pd.MultiIndex))
-            )
-
+            key_idx = pd.Index(list(key), tupleize_cols=isinstance(idx, pd.MultiIndex))
+        if pd.api.types.is_object_dtype(key_idx.dtype) and not isinstance(key_idx, pd.MultiIndex):
+            for x in key_idx:
+                try:
+                    hash(x)
+                except TypeError:
+                    raise TypeError(
+                        f"Cannot index NormalizedMatrix.loc with unhashable {type(x).__name__}."
+                    ) from None
         positions = _safe_get_indexer(idx, key_idx)
         missing = positions < 0
         if np.any(missing):
-            missing_labels = list(key_idx[missing][:5])
-            raise KeyError(f"Region IDs not found in region_index: {missing_labels}")
-        return self._matrix._subset_positions(positions)
+            raise KeyError(f"Region IDs not found in region_index: {list(key_idx[missing][:5])}")
+        return m._subset_positions(positions)
 
 
 class _MatrixILocIndexer:
@@ -876,136 +240,45 @@ class _MatrixILocIndexer:
     def __init__(self, matrix: NormalizedMatrix) -> None:
         self._matrix = matrix
 
-    def _validate_sequence(self, items: Sequence[Any]) -> np.ndarray:
-        n_regions = self._matrix.n_regions
-        if len(items) == 0:
-            return np.empty(0, dtype=np.intp)
-        if any(isinstance(x, (bool, np.bool_)) for x in items) and all(
-            isinstance(x, (bool, np.bool_)) or _is_scalar_na(x) for x in items
-        ):
-            if any(_is_scalar_na(x) for x in items):
-                raise ValueError("Boolean mask cannot contain NA / missing values.")
-            arr = np.asarray(items, dtype=bool)
-            if len(arr) != n_regions:
-                raise ValueError(
-                    f"Boolean mask length ({len(arr)}) does not match "
-                    f"n_regions ({n_regions})."
-                )
-            return np.flatnonzero(arr)
-        if all(
-            isinstance(x, (int, np.integer)) and not isinstance(x, (bool, np.bool_))
-            for x in items
-        ):
-            out: list[int] = []
-            for x in items:
-                iv = int(x)
-                if iv < -n_regions or iv >= n_regions:
-                    raise IndexError(
-                        f"positional index {iv} is out of bounds for axis 0 with size {n_regions}"
-                    )
-                out.append(iv)
-            return np.array(out, dtype=np.intp)
-        raise TypeError("Positional indexer must contain integers or a boolean mask.")
-
     def __getitem__(self, key: Any) -> NormalizedMatrix:
-        if isinstance(key, tuple):
-            raise IndexError(
-                "NormalizedMatrix.iloc is 1D (rows only); tuple / multi-axis indexing is not supported."
-            )
+        m = self._matrix
+        n = m.n_regions
         if isinstance(key, (bool, np.bool_)):
             raise TypeError("Cannot index by location with a boolean scalar.")
         if isinstance(key, (int, np.integer)):
-            iv = int(key)
-            n_regions = self._matrix.n_regions
-            if iv < -n_regions or iv >= n_regions:
-                raise IndexError(
-                    f"positional index {iv} is out of bounds for axis 0 with size {n_regions}"
-                )
-            return self._matrix._subset_positions(np.array([iv], dtype=np.intp))
-        if (
-            key is None
-            or key is Ellipsis
-            or key is pd.NA
-            or key is pd.NaT
-            or isinstance(key, (str, bytes, bytearray))
-            or np.isscalar(key)
-        ):
-            raise TypeError(f"Cannot index by location with scalar of type {type(key).__name__}.")
+            return m._subset_positions(_check_bounds(np.array([int(key)], dtype=object), n))
         if isinstance(key, slice):
             for bound in (key.start, key.stop, key.step):
                 if bound is not None and (
-                    isinstance(bound, (bool, np.bool_))
-                    or not isinstance(bound, (int, np.integer))
+                    isinstance(bound, (bool, np.bool_)) or not isinstance(bound, (int, np.integer))
                 ):
                     raise TypeError(
                         f"Slice bounds for iloc must be integers or None, got {type(bound).__name__}."
                     )
-            positions = np.arange(*key.indices(self._matrix.n_regions), dtype=np.intp)
-            return self._matrix._subset_positions(positions)
-        if isinstance(key, (pd.DataFrame, pd.MultiIndex, Mapping, set, frozenset)):
+            return m._subset_positions(np.arange(*key.indices(n), dtype=np.intp))
+        if not pd.api.types.is_list_like(key) or isinstance(key, pd.MultiIndex):
             raise TypeError(f"Cannot index by location with {type(key).__name__}.")
-        if isinstance(key, np.ndarray) and key.ndim != 1:
-            raise TypeError(
-                f"NormalizedMatrix.iloc requires a 1D indexer, got {key.ndim}D array."
-            )
-        if isinstance(key, (np.ndarray, pd.Series, pd.Index, pd.api.extensions.ExtensionArray)):
-            if getattr(key, "ndim", 1) != 1:
-                raise TypeError("NormalizedMatrix.iloc requires a 1D indexer.")
-            elem_dtype = (
-                key.dtype.categories.dtype
-                if isinstance(key.dtype, pd.CategoricalDtype)
-                else key.dtype
-            )
-            if pd.api.types.is_bool_dtype(key.dtype) or pd.api.types.is_bool_dtype(elem_dtype):
-                if pd.isna(key).any():
-                    raise ValueError("Boolean mask cannot contain NA / missing values.")
-                arr = np.asarray(key, dtype=bool)
-                if len(arr) != self._matrix.n_regions:
-                    raise ValueError(
-                        f"Boolean mask length ({len(arr)}) does not match "
-                        f"n_regions ({self._matrix.n_regions})."
-                    )
-                return self._matrix._subset_positions(np.flatnonzero(arr))
-            if pd.api.types.is_signed_integer_dtype(elem_dtype):
-                if pd.isna(key).any():
-                    raise TypeError("Cannot index by location with NA / missing values.")
-                iarr = np.asarray(key, dtype=np.int64)
-                n_regions = self._matrix.n_regions
-                if iarr.size and (int(np.min(iarr)) < -n_regions or int(np.max(iarr)) >= n_regions):
-                    bad = int(iarr[np.flatnonzero((iarr < -n_regions) | (iarr >= n_regions))[0]])
-                    raise IndexError(
-                        f"positional index {bad} is out of bounds for axis 0 with size {n_regions}"
-                    )
-                return self._matrix._subset_positions(iarr.astype(np.intp, copy=False))
-            if pd.api.types.is_unsigned_integer_dtype(elem_dtype):
-                if pd.isna(key).any():
-                    raise TypeError("Cannot index by location with NA / missing values.")
-                uarr = np.asarray(key, dtype=np.uint64)
-                n_regions = self._matrix.n_regions
-                if uarr.size and int(np.max(uarr)) >= n_regions:
-                    bad = int(uarr[np.flatnonzero(uarr >= n_regions)[0]])
-                    raise IndexError(
-                        f"positional index {bad} is out of bounds for axis 0 with size {n_regions}"
-                    )
-                return self._matrix._subset_positions(uarr.astype(np.intp))
-            if pd.api.types.is_object_dtype(elem_dtype):
-                return self._matrix._subset_positions(self._validate_sequence(list(key)))
-            raise TypeError(f"Cannot index by location with dtype {key.dtype}.")
+        key = _as_1d_key(key, "iloc")
         if isinstance(key, range):
-            if not key:
-                return self._matrix._subset_positions(np.empty(0, dtype=np.intp))
-            n_regions = self._matrix.n_regions
-            for endpoint in (key[0], key[-1]):
-                if endpoint < -n_regions or endpoint >= n_regions:
-                    raise IndexError(
-                        f"positional index {endpoint} is out of bounds for axis 0 with size {n_regions}"
-                    )
-            return self._matrix._subset_positions(np.asarray(key, dtype=np.intp))
-        if isinstance(key, Sequence):
-            return self._matrix._subset_positions(self._validate_sequence(key))
-        if isinstance(key, Iterable):
-            return self._matrix._subset_positions(self._validate_sequence(list(key)))
-        raise TypeError(f"Unsupported indexer type for iloc: {type(key).__name__}.")
+            if key and not (-n <= key[0] < n and -n <= key[-1] < n):  # len() overflows on huge ranges
+                raise IndexError(f"positional index out of bounds for axis 0 with size {n}")
+            return m._subset_positions(np.asarray(key, dtype=np.intp))
+        if len(key) == 0:
+            return m._subset_positions(np.empty(0, dtype=np.intp))
+        mask = _bool_mask(key, n)
+        if mask is not None:
+            return m._subset_positions(mask)
+        if pd.api.types.infer_dtype(key, skipna=False) != "integer":
+            raise TypeError("Positional indexer must contain integers or a boolean mask.")
+        return m._subset_positions(_check_bounds(np.asarray(key, dtype=object), n))
+
+
+def _check_bounds(pos: np.ndarray, n: int) -> np.ndarray:
+    """Integer positions (Python ints in an object array, so huge values cannot wrap)."""
+    bad = [int(p) for p in pos if not -n <= int(p) < n]
+    if bad:
+        raise IndexError(f"positional index {bad[0]} is out of bounds for axis 0 with size {n}")
+    return pos.astype(np.intp)
 
 
 @dataclass(init=False, eq=False)
@@ -1091,8 +364,7 @@ class NormalizedMatrix:
                 f"`region_index` length ({len(idx)}) does not match "
                 f"`values.shape[0]` ({arr.shape[0]})."
             )
-        if not idx.is_unique:
-            raise ValueError("`region_index` must contain unique region identifiers.")
+        _validate_region_index(idx)
         self.region_index = idx
 
         if mode not in ("reference_point", "scale_regions"):
@@ -1261,7 +533,11 @@ class NormalizedMatrix:
         if not target.is_unique:
             raise ValueError("Target `region_index` must contain unique identifiers.")
 
-        indexer = _safe_get_indexer(self.region_index, target)
+        return self._take_rows(_safe_get_indexer(self.region_index, target), target, fill_value)
+
+    def _take_rows(
+        self, indexer: np.ndarray, target: pd.Index, fill_value: float = np.nan
+    ) -> NormalizedMatrix:
         out = np.full((len(target), self.n_bins), fill_value, dtype=self.values.dtype)
         present = indexer >= 0
         if np.any(present):
@@ -1349,34 +625,17 @@ class NormalizedMatrix:
             raise ValueError(
                 "Cannot combine matrices with different bin geometry (" + "; ".join(diff) + ")."
             )
-        if other.region_index is self.region_index:
+        if other.region_index is self.region_index or other.region_index.equals(self.region_index):
             return other
-        if len(self.region_index) == 0 or len(other.region_index) == 0:
-            return other.reindex(self.region_index)
         indexer = _safe_get_indexer(other.region_index, self.region_index)
-        self_na = _index_isna(self.region_index)
-        both_all_na = bool(self_na.all()) and bool(_index_isna(other.region_index).all())
-        has_overlap = (
-            bool(np.any(indexer >= 0))
-            if both_all_na
-            else bool(np.any((indexer >= 0) & ~self_na))
-        )
-        if not has_overlap:
+        if len(self.region_index) and len(other.region_index) and not np.any(indexer >= 0):
             raise ValueError(
                 "`other` shares no region identifiers with `self` "
                 f"(self starts {list(self.region_index[:3])}, "
                 f"other starts {list(other.region_index[:3])}). "
                 "Pass `region_index=` when constructing matrices from arrays."
             )
-        if len(other.region_index) == len(self.region_index) and np.array_equal(
-            indexer, np.arange(len(self.region_index), dtype=np.intp)
-        ):
-            return other
-        out = np.full((len(self.region_index), other.n_bins), np.nan, dtype=other.values.dtype)
-        present = indexer >= 0
-        if np.any(present):
-            out[present] = other.values[indexer[present]]
-        return other._clone(values=out, region_index=self.region_index.copy())
+        return other._take_rows(indexer, self.region_index)
 
     def subtract(self, other: NormalizedMatrix) -> NormalizedMatrix:
         """Compute ``self - other`` after aligning ``other`` to ``self.region_index``."""

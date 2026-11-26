@@ -419,6 +419,13 @@ def test_matrices_rejects_duplicate_cells_across_all_branches():
     with pytest.raises(ValueError, match="Duplicate"):
         eh.matrix(id_vals, b_dup, "v")
 
+    # Duplicate value column names would collide in the output dict
+    dup_cols = pd.DataFrame(np.ones((len(b), 2)), columns=["v", "v"]).assign(
+        intervalID=np.arange(1, len(b) + 1)
+    )
+    with pytest.raises(ValueError, match="duplicate column names"):
+        eh.matrices(dup_cols, b)
+
     # Out-of-bounds bin checked BEFORE r * n_bins + b (where r=0, b=n_bins aliases r=1, b=0)
     oob_alias = pd.DataFrame({"region": ["a", "b"], "bin": [n_bins, 0], "v": [1.0, 2.0]})
     with pytest.raises(ValueError, match=r"0\.\."):
@@ -436,7 +443,7 @@ def test_matrices_rejects_duplicate_cells_across_all_branches():
         eh.matrix(b_bad_bin[["chrom", "start", "end"]].assign(v=1.0), b_bad_bin, "v")
 
 
-def test_matrices_validates_bin_and_interval_id_before_int64_cast():
+def test_matrices_validates_bin_and_interval_id_columns():
     import warnings
 
     b = eh.bins(_regions(), upstream=100, downstream=100, bin_size=50)
@@ -487,8 +494,8 @@ def test_matrices_validates_bin_and_interval_id_before_int64_cast():
             eh.matrix(
                 pd.DataFrame(
                     {
-                        "region": pd.Series([], dtype="str"),
-                        "bin": pd.Series([], dtype="str"),
+                        "region": pd.Series([], dtype="string"),
+                        "bin": pd.Series([], dtype="string"),
                         "v": pd.Series([], dtype=float),
                     }
                 ),
@@ -499,65 +506,12 @@ def test_matrices_validates_bin_and_interval_id_before_int64_cast():
             with pytest.raises(ValueError, match="intervalID"):
                 eh.matrix(pd.DataFrame({"intervalID": [bad_id], "v": [1.0]}), b, "v")
 
-        # Native-precision np.longdouble checks (fractional, overflow, int64 bounds, > 2**53 exactness)
-        from enriched_heatmap._bins import _as_int64_index
-
-        frac_ld = np.longdouble(1) + np.longdouble(2) ** -60
-        huge_ld = np.longdouble(10.0) ** 1000
-        ld_bad_series = [
-            pd.Series(np.array([np.longdouble("inf"), np.longdouble(1.0)], dtype=np.longdouble)),
-            pd.Series(np.array([-np.longdouble("inf"), np.longdouble(1.0)], dtype=np.longdouble)),
-            pd.Series(np.array([np.longdouble(1 << 63), np.longdouble(1.0)], dtype=np.longdouble)),
-            pd.Series([np.longdouble(1 << 63), np.longdouble(1.0)], dtype=object),
-        ]
-        if frac_ld != np.floor(frac_ld):
-            ld_bad_series.extend(
-                [
-                    pd.Series(np.array([frac_ld, np.longdouble(2.0)], dtype=np.longdouble)),
-                    pd.Series([frac_ld, np.longdouble(2.0)], dtype=object),
-                    pd.Series(
-                        pd.Categorical.from_codes(
-                            [0, 1], categories=pd.Index([frac_ld, np.longdouble(2.0)], dtype=object)
-                        )
-                    ),
-                    pd.Series(pd.arrays.SparseArray(np.array([frac_ld, np.longdouble(2.0)], dtype=np.longdouble))),
-                ]
-            )
-        if np.isfinite(huge_ld):
-            ld_bad_series.extend(
-                [
-                    pd.Series(np.array([huge_ld, np.longdouble(1.0)], dtype=np.longdouble)),
-                    pd.Series(np.array([-huge_ld, np.longdouble(1.0)], dtype=np.longdouble)),
-                    pd.Series([huge_ld, np.longdouble(1.0)], dtype=object),
-                ]
-            )
-        for bad_ld in ld_bad_series:
-            with pytest.raises(ValueError):
-                eh.matrix(pd.DataFrame({"region": ["a", "b"], "bin": bad_ld, "v": [1.0, 2.0]}), b, "v")
-            with pytest.raises(ValueError):
-                eh.matrix(pd.DataFrame({"intervalID": bad_ld, "v": [1.0, 2.0]}), b, "v")
-
-        if int(np.finfo(np.longdouble).nmant) + 1 >= 63:
-            odd_ld = np.longdouble(1 << 53) + np.longdouble(1)
-            i64_max_ld = np.longdouble((1 << 63) - 1)
-            i64_min_ld = np.longdouble(-(1 << 63))
-            got_ld = _as_int64_index(
-                pd.Series(np.array([odd_ld, i64_max_ld, i64_min_ld], dtype=np.longdouble)), "bin"
-            )
-            assert got_ld.tolist() == [(1 << 53) + 1, (1 << 63) - 1, -(1 << 63)]
-            got_obj_ld = _as_int64_index(
-                pd.Series([odd_ld, i64_max_ld, i64_min_ld], dtype=object), "bin"
-            )
-            assert got_obj_ld.tolist() == [(1 << 53) + 1, (1 << 63) - 1, -(1 << 63)]
-
     # Exact integer-valued floats, nullable Int64/Float64, Categorical[int], and 0-row frames succeed
     ref_df = pd.DataFrame({"region": ["a", "a", "b"], "bin": [0, 1, 2], "v": [3.0, 4.0, 5.0]})
     ref_mat = eh.matrix(ref_df, b, "v")
     for bin_col in [
         pd.Series([0.0, 1.0, 2.0]),
         pd.Series([0.0, 1.0, 2.0], dtype="Float64"),
-        pd.Series(np.array([0.0, 1.0, 2.0], dtype=np.longdouble)),
-        pd.Series([np.longdouble(0.0), np.longdouble(1.0), np.longdouble(2.0)], dtype=object),
         pd.Series([0, 1, 2], dtype="Int64"),
         pd.Series(pd.Categorical([0, 1, 2])),
         pd.Series(pd.Categorical([0.0, 1.0, 2.0])),
